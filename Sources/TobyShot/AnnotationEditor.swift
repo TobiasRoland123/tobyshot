@@ -60,6 +60,7 @@ public final class AnnotationEditorWindow: NSWindowController, NSWindowDelegate 
     }
 
     public func windowShouldClose(_ sender: NSWindow) -> Bool {
+        editorModel.finishTextEditing()
         guard editorModel.hasUnsavedChanges else { return true }
         let alert = NSAlert()
         alert.messageText = "Close this annotation?"
@@ -195,6 +196,7 @@ struct EditorAnnotation: Identifiable, Equatable {
     var color: NSColor = .systemRed
     var width: CGFloat = 5
     var text: String = ""
+    var textSize: CGFloat?
     var step: Int = 1
     var shadow = true
     var reversed = false
@@ -212,11 +214,18 @@ struct EditorState {
 @MainActor
 final class AnnotationEditorModel: ObservableObject {
     @Published var image: NSImage
-    @Published var tool: AnnotationTool = .select
+    @Published var tool: AnnotationTool = .select {
+        didSet { finishTextEditing() }
+    }
     @Published var selectedID: UUID?
+    @Published private(set) var editingTextID: UUID?
     @Published var showBackgroundPanel = false
-    @Published var color: NSColor = .systemRed
-    @Published var strokeWidth: CGFloat = 5
+    @Published var color: NSColor = .systemRed {
+        didSet { updateEditingTextAppearance(color: color) }
+    }
+    @Published var strokeWidth: CGFloat = 5 {
+        didSet { updateEditingTextAppearance(width: strokeWidth) }
+    }
     @Published var background: AnnotationBackground = .none
     @Published var padding: CGFloat = 36
     @Published var cornerRadius: CGFloat = 18
@@ -234,8 +243,11 @@ final class AnnotationEditorModel: ObservableObject {
     private var draggingAnnotation: UUID?
     private var dragOrigin: CGPoint = .zero
     private var movingOriginal: EditorAnnotation?
+    private var moveCheckpointed = false
+    private var textResize: AnnotationTextResize?
     private var cropAnchor: CGPoint?
     private var savedState: EditorState?
+    private var textEditOriginalState: EditorState?
 
     init(image: NSImage, sourceURL: URL?) {
         self.image = image
@@ -247,21 +259,27 @@ final class AnnotationEditorModel: ObservableObject {
         if let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) { return NSSize(width: cg.width, height: cg.height) }
         return image.size
     }
-    var canUndo: Bool { !undoStack.isEmpty }
+    var canUndo: Bool { !undoStack.isEmpty || textEditOriginalState.map { $0.annotations != annotations } == true }
     var canRedo: Bool { !redoStack.isEmpty }
 
     var hasUnsavedChanges: Bool {
         guard let savedState else { return false }
         return image !== savedState.image || annotations != savedState.annotations || background != savedState.background || padding != savedState.padding || cornerRadius != savedState.cornerRadius
     }
-    func markSaved() { savedState = state() }
+    func markSaved() { finishTextEditing(); savedState = state() }
     private func state() -> EditorState { EditorState(image: image, annotations: annotations, crop: nil, background: background, padding: padding, cornerRadius: cornerRadius) }
-    private func checkpoint() { undoStack.append(state()); redoStack.removeAll(); selectedID = nil }
+    private func checkpoint() {
+        finishTextEditing()
+        undoStack.append(state()); redoStack.removeAll(); selectedID = nil
+    }
+
     func undo() {
+        finishTextEditing()
         guard let previous = undoStack.popLast() else { return }
         redoStack.append(state()); restore(previous)
     }
     func redo() {
+        finishTextEditing()
         guard let next = redoStack.popLast() else { return }
         undoStack.append(state()); restore(next)
     }
@@ -291,19 +309,83 @@ final class AnnotationEditorModel: ObservableObject {
         return AnnotationRenderer.render(annotation: annotation, sourceImage: image)
     }
 
+    @discardableResult
+    func beginTextEditing(_ id: UUID) -> Bool {
+        guard annotations.contains(where: { $0.id == id && $0.kind == .text }) else { return false }
+        if editingTextID == id { return true }
+        finishTextEditing()
+        textEditOriginalState = state()
+        selectedID = id
+        editingTextID = id
+        return true
+    }
+
+    func updateText(_ text: String) {
+        guard let id = editingTextID, let index = annotations.firstIndex(where: { $0.id == id }),
+              annotations[index].text != text else { return }
+        annotations[index].text = text
+    }
+
+    func finishTextEditing() {
+        guard let id = editingTextID, let original = textEditOriginalState else { return }
+        editingTextID = nil
+        textEditOriginalState = nil
+        if let annotation = annotations.first(where: { $0.id == id }),
+           annotation.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            annotations.removeAll { $0.id == id }
+            if selectedID == id { selectedID = nil }
+        }
+        if annotations != original.annotations {
+            undoStack.append(original)
+            redoStack.removeAll()
+        }
+    }
+
+    private func updateEditingTextAppearance(color: NSColor? = nil, width: CGFloat? = nil) {
+        guard let id = editingTextID, let index = annotations.firstIndex(where: { $0.id == id }) else { return }
+        if let color { annotations[index].color = color }
+        if let width { annotations[index].width = width; annotations[index].textSize = nil }
+    }
+
+    func textSelectionBounds(_ annotation: EditorAnnotation) -> CGRect {
+        CGRect(origin: annotation.start, size: AnnotationTextLayout(annotation).selectionSize)
+    }
+
+    @discardableResult
+    func beginTextResize(corner: AnnotationResizeCorner, at point: CGPoint) -> Bool {
+        guard tool == .select || tool == .text,
+              let id = selectedID, let annotation = annotations.first(where: { $0.id == id }),
+              annotation.kind == .text, !annotation.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        finishTextEditing()
+        textResize = AnnotationTextResize(original: annotation, corner: corner, start: point, bounds: textSelectionBounds(annotation))
+        moveCheckpointed = false
+        return true
+    }
+
+    func annotation(at point: CGPoint) -> EditorAnnotation? {
+        annotations.last(where: { hitTest($0, point: point) })
+    }
+
     func begin(at point: CGPoint) {
+        finishTextEditing()
         if tool == .select {
             if let hit = annotations.last(where: { hitTest($0, point: point) }) {
-                undoStack.append(state()); redoStack.removeAll()
+                moveCheckpointed = false
                 selectedID = hit.id; draggingAnnotation = hit.id; dragOrigin = point; movingOriginal = hit
             } else { selectedID = nil }
             return
         }
         if tool == .text {
-            let alert = NSAlert(); alert.messageText = "Add Text"; alert.informativeText = "Enter the annotation text."; alert.addButton(withTitle: "Add"); alert.addButton(withTitle: "Cancel")
-            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24)); field.stringValue = "Text"; alert.accessoryView = field
-            guard alert.runModal() == .alertFirstButtonReturn, !field.stringValue.isEmpty else { return }
-            checkpoint(); annotations.append(make(.text, at: point, end: point, text: field.stringValue)); return
+            if let hit = annotation(at: point), hit.kind == .text {
+                beginTextEditing(hit.id)
+            } else {
+                textEditOriginalState = state()
+                let annotation = make(.text, at: point, end: point)
+                annotations.append(annotation)
+                selectedID = annotation.id
+                editingTextID = annotation.id
+            }
+            return
         }
         if tool == .step { checkpoint(); stepCount += 1; annotations.append(make(.step, at: point, end: point, step: stepCount)); return }
         if tool == .crop { cropAnchor = point; cropRect = CGRect(origin: point, size: .zero); return }
@@ -322,9 +404,19 @@ final class AnnotationEditorModel: ObservableObject {
     }
 
     func continueDrag(to point: CGPoint) {
+        guard editingTextID == nil else { return }
+        if let resize = textResize, let index = annotations.firstIndex(where: { $0.id == resize.original.id }) {
+            let resized = resize.annotation(at: point)
+            guard resized != annotations[index] else { return }
+            if !moveCheckpointed { checkpoint(); selectedID = resize.original.id; moveCheckpointed = true }
+            annotations[index] = resized
+            return
+        }
         if tool == .select, let id = draggingAnnotation, let original = movingOriginal,
            let index = annotations.firstIndex(where: { $0.id == id }) {
             let delta = CGPoint(x: point.x - dragOrigin.x, y: point.y - dragOrigin.y)
+            guard delta != .zero || moveCheckpointed else { return }
+            if !moveCheckpointed { checkpoint(); selectedID = id; moveCheckpointed = true }
             annotations[index] = translated(original, by: delta); return
         }
         if tool == .crop { cropRect = rect(from: cropAnchor ?? point, to: point); return }
@@ -338,6 +430,7 @@ final class AnnotationEditorModel: ObservableObject {
     }
 
     func endDrag() {
+        textResize = nil
         if tool == .freehand, let id = selectedID, let index = annotations.firstIndex(where: { $0.id == id }), annotations[index].points.last != annotations[index].end {
             annotations[index].points.append(annotations[index].end)
         }
@@ -354,12 +447,12 @@ final class AnnotationEditorModel: ObservableObject {
               let cropped = cg.cropping(to: bounded) else { cropRect = nil; return }
         // CGImage cropping and the model both use top-left image coordinates.
         // Preserve annotations that remain inside the crop.
-        undoStack.append(state()); redoStack.removeAll()
+        checkpoint()
         let delta = CGPoint(x: bounded.minX, y: bounded.minY)
         image = NSImage(cgImage: cropped, size: NSSize(width: cropped.width, height: cropped.height))
         annotations = annotations.compactMap { a in
             let moved = translated(a, by: CGPoint(x: -delta.x, y: -delta.y))
-            if !CGRect(origin: .zero, size: CGSize(width: cropped.width, height: cropped.height)).insetBy(dx: -max(a.width, 1), dy: -max(a.width, 1)).intersects(annotationBounds(moved)) { return nil }
+            if !CGRect(origin: .zero, size: CGSize(width: cropped.width, height: cropped.height)).intersects(annotationBounds(moved)) { return nil }
             return moved
         }
         cropRect = nil; selectedID = nil
@@ -369,28 +462,22 @@ final class AnnotationEditorModel: ObservableObject {
         EditorAnnotation(kind: kind, start: start, end: end, color: color, width: strokeWidth, text: text, step: step, shadow: annotationShadow, reversed: UserDefaults.standard.bool(forKey: "inverseArrow") != NSEvent.modifierFlags.contains(.option))
     }
     private func rect(from a: CGPoint, to b: CGPoint) -> CGRect { CGRect(x: min(a.x,b.x), y: min(a.y,b.y), width: abs(a.x-b.x), height: abs(a.y-b.y)) }
-    func annotationBounds(_ a: EditorAnnotation) -> CGRect { Self.bounds(for: a) }
+    func annotationBounds(_ a: EditorAnnotation) -> CGRect { AnnotationGeometry(a, imageSize: pixelSize).renderedBounds }
 
     nonisolated static func bounds(for a: EditorAnnotation) -> CGRect {
-        if a.kind == .freehand, !a.points.isEmpty {
-            let xs = a.points.map(\.x), ys = a.points.map(\.y)
-            return CGRect(x: xs.min()!, y: ys.min()!, width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!).insetBy(dx: -a.width, dy: -a.width)
-        }
-        if a.kind == .text {
-            let size = (a.text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: max(20, a.width * 5), weight: .bold)])
-            return CGRect(origin: a.start, size: size).insetBy(dx: -4, dy: -4)
-        }
-        return CGRect(x: min(a.start.x, a.end.x), y: min(a.start.y, a.end.y),
-                      width: abs(a.end.x - a.start.x), height: abs(a.end.y - a.start.y))
-            .insetBy(dx: -max(a.width, 22), dy: -max(a.width, 22))
+        AnnotationGeometry(a).renderedBounds
     }
-    private func hitTest(_ a: EditorAnnotation, point: CGPoint) -> Bool { annotationBounds(a).contains(point) }
+    private func hitTest(_ a: EditorAnnotation, point: CGPoint) -> Bool {
+        annotationBounds(a).insetBy(dx: -6, dy: -6).contains(point)
+    }
     private func translated(_ a: EditorAnnotation, by delta: CGPoint) -> EditorAnnotation {
         var b = a; b.start.x += delta.x; b.start.y += delta.y; b.end.x += delta.x; b.end.y += delta.y
         b.points = b.points.map { CGPoint(x: $0.x + delta.x, y: $0.y + delta.y) }; return b
     }
 
-    func renderedImage() -> NSImage { AnnotationRenderer.render(image: image, annotations: annotations, background: background, padding: padding, cornerRadius: cornerRadius) }
+    func renderedImage(excluding annotationID: UUID? = nil) -> NSImage {
+        AnnotationRenderer.render(image: image, annotations: annotations.filter { $0.id != annotationID }, background: background, padding: padding, cornerRadius: cornerRadius)
+    }
 }
 
 private struct AnnotationEditorRoot: View {
@@ -520,7 +607,7 @@ private struct AnnotationEditorRoot: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Annotation shortcuts").font(.title2.bold())
             Text("Move \(shortcuts.label(for: .moveTool))   Crop \(shortcuts.label(for: .cropTool))   Draw \(shortcuts.label(for: .drawTool))   Line \(shortcuts.label(for: .lineTool))\nText \(shortcuts.label(for: .textTool))   Arrow \(shortcuts.label(for: .arrowTool))   Counter \(shortcuts.label(for: .counterTool))   Ellipse \(shortcuts.label(for: .ellipseTool))\nRedact \(shortcuts.label(for: .redactionTool))   Rectangle \(shortcuts.label(for: .rectangleTool))   Filled rectangle \(shortcuts.label(for: .filledRectangleTool))   Pixelate \(shortcuts.label(for: .pixelateTool))\nBackground \(shortcuts.label(for: .backgroundTool))   Smaller/larger \(shortcuts.label(for: .decreaseToolSize))/\(shortcuts.label(for: .increaseToolSize))\nCopy object \(shortcuts.label(for: .editorCopyObject))   Duplicate \(shortcuts.label(for: .editorDuplicate))   Save \(shortcuts.label(for: .editorSave))   Save as \(shortcuts.label(for: .editorSaveAs))\nCopy image \(shortcuts.label(for: .editorCopyScreenshot))   Print \(shortcuts.label(for: .editorPrint))   Pin \(shortcuts.label(for: .editorPin))\nUndo ⌘Z   Redo ⇧⌘Z   Delete Remove   Escape Select")
-            Text("Drag on the canvas to draw. Select and drag an annotation to move it. Crop applies when you finish the crop selection.").foregroundStyle(.secondary)
+            Text("Drag on the canvas to draw. Select and drag an annotation to move it. Click with Text to type on the image; double-click existing text to edit it. Drag a text corner to resize. Return finishes editing, Shift-Return adds a line. Crop applies when you finish the crop selection.").foregroundStyle(.secondary)
             HStack { Spacer(); Button("Close") { showHelp = false }.keyboardShortcut(.defaultAction) }
         }.padding(24).frame(width: 420)
     }
@@ -529,7 +616,9 @@ private struct AnnotationEditorRoot: View {
 enum AnnotationRenderer {
     static func render(annotation: EditorAnnotation, sourceImage: NSImage) -> NSImage? {
         guard let source = sourceImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
-        let bounds = AnnotationEditorModel.bounds(for: annotation)
+        let geometry = AnnotationGeometry(annotation, imageSize: CGSize(width: source.width, height: source.height))
+        let bounds = geometry.exportBounds
+        guard !bounds.isNull, !bounds.isEmpty else { return nil }
         let width = max(1, Int(ceil(bounds.width)))
         let height = max(1, Int(ceil(bounds.height)))
         guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
@@ -547,7 +636,7 @@ enum AnnotationRenderer {
                 }
             }
         }
-        draw(annotation, in: context, pixelSize: CGSize(width: source.width, height: source.height), sourcePixels: sourcePixels)
+        draw(annotation, geometry: geometry, in: context, pixelSize: CGSize(width: source.width, height: source.height), sourcePixels: sourcePixels)
         guard let rendered = context.makeImage() else { return nil }
         return NSImage(cgImage: rendered, size: NSSize(width: width, height: height))
     }
@@ -578,38 +667,31 @@ enum AnnotationRenderer {
         return NSImage(cgImage: result, size: NSSize(width: width, height: height))
     }
 
-    private static func draw(_ a: EditorAnnotation, in c: CGContext, pixelSize: CGSize, sourcePixels: [UInt8]) {
+    private static func draw(_ a: EditorAnnotation, geometry suppliedGeometry: AnnotationGeometry? = nil, in c: CGContext, pixelSize: CGSize, sourcePixels: [UInt8]) {
+        let geometry = suppliedGeometry ?? AnnotationGeometry(a, imageSize: pixelSize)
         let col = a.color.cgColor
-        c.saveGState(); c.setStrokeColor(col); c.setFillColor(col); c.setLineWidth(a.width); c.setLineCap(.round); c.setLineJoin(.round)
-        if a.shadow { c.setShadow(offset: CGSize(width: 0, height: 2), blur: 3, color: NSColor.black.withAlphaComponent(0.55).cgColor) }
-        switch a.kind {
-        case .rectangle, .filledRectangle, .ellipse:
-            let r = CGRect(x: min(a.start.x,a.end.x), y: min(a.start.y,a.end.y), width: abs(a.end.x-a.start.x), height: abs(a.end.y-a.start.y))
-            if a.kind == .filledRectangle { c.fill(r) } else if a.kind == .ellipse { c.strokeEllipse(in: r) } else { c.stroke(r) }
-        case .line: c.move(to: a.start); c.addLine(to: a.end); c.strokePath()
-        case .arrow:
-            let inverse = a.reversed
-            let from = inverse ? a.end : a.start, to = inverse ? a.start : a.end
-            c.move(to: from); c.addLine(to: to); let angle = atan2(to.y - from.y, to.x - from.x); let head: CGFloat = max(10, a.width * 3)
-            c.move(to: to); c.addLine(to: CGPoint(x: to.x - head * cos(angle - .pi / 6), y: to.y - head * sin(angle - .pi / 6)))
-            c.move(to: to); c.addLine(to: CGPoint(x: to.x - head * cos(angle + .pi / 6), y: to.y - head * sin(angle + .pi / 6))); c.strokePath()
-        case .freehand:
-            guard let first = a.points.first else { break }; c.move(to: first)
-            if a.points.count == 1 { c.addLine(to: CGPoint(x: first.x + 0.1, y: first.y + 0.1)) }
-            else { for p in a.points.dropFirst() { c.addLine(to: p) } }; c.strokePath()
-        case .redaction:
-            c.setShadow(offset: .zero, blur: 0, color: nil); c.setFillColor(NSColor.black.cgColor); c.fill(CGRect(x: min(a.start.x,a.end.x), y: min(a.start.y,a.end.y), width: abs(a.end.x-a.start.x), height: abs(a.end.y-a.start.y)))
-        case .pixelation:
-            c.setShadow(offset: .zero, blur: 0, color: nil)
-            pixelate(a, in: c, imageSize: pixelSize, sourcePixels: sourcePixels)
-        case .text: drawText(a, in: c)
-        case .step: drawStep(a, in: c)
+        c.saveGState(); c.setStrokeColor(col); c.setFillColor(col); c.setLineWidth(geometry.lineWidth); c.setLineCap(.round); c.setLineJoin(.round)
+        if let shadow = geometry.shadow { c.setShadow(offset: shadow.offset, blur: shadow.blur, color: shadow.color) }
+        if a.kind == .pixelation {
+            pixelate(a, rect: geometry.pixelationRect, in: c, imageSize: pixelSize, sourcePixels: sourcePixels)
+        } else {
+            if a.kind == .redaction { c.setFillColor(NSColor.black.cgColor) }
+            if a.kind == .rectangle {
+                c.stroke(geometry.path.boundingBoxOfPath)
+            } else {
+                c.addPath(geometry.path)
+                if geometry.stroked { c.strokePath() } else { c.fillPath() }
+            }
+            if let text = geometry.text {
+                if a.kind == .step { c.setShadow(offset: .zero, blur: 0, color: nil) }
+                drawText(text, in: c)
+            }
+            geometry.textLayout?.draw(at: a.start, in: c)
         }
         c.restoreGState()
     }
 
-    private static func pixelate(_ a: EditorAnnotation, in c: CGContext, imageSize: CGSize, sourcePixels: [UInt8]) {
-        let r = CGRect(x: min(a.start.x,a.end.x), y: min(a.start.y,a.end.y), width: abs(a.end.x-a.start.x), height: abs(a.end.y-a.start.y)).integral.intersection(CGRect(origin: .zero, size: imageSize))
+    private static func pixelate(_ a: EditorAnnotation, rect r: CGRect, in c: CGContext, imageSize: CGSize, sourcePixels: [UInt8]) {
         guard r.width > 0, r.height > 0 else { return }
         // Bitmap data and annotation coordinates both start at the top-left row.
         let step = max(8, Int(a.width * 5))
@@ -621,19 +703,9 @@ enum AnnotationRenderer {
         } }
     }
 
-    private static func drawText(_ a: EditorAnnotation, in c: CGContext) {
-        let font = NSFont.systemFont(ofSize: max(20, a.width * 5), weight: .bold)
-        let string = NSAttributedString(string: a.text, attributes: [.font: font, .foregroundColor: a.color])
-        let line = CTLineCreateWithAttributedString(string)
-        c.saveGState(); c.translateBy(x: a.start.x, y: a.start.y + font.ascender); c.scaleBy(x: 1, y: -1)
-        c.textMatrix = .identity; c.textPosition = .zero; CTLineDraw(line, c); c.restoreGState()
-    }
-    private static func drawStep(_ a: EditorAnnotation, in c: CGContext) {
-        let center = a.start, radius = max(15, a.width * 3.5)
-        c.fillEllipse(in: CGRect(x:center.x-radius,y:center.y-radius,width:radius*2,height:radius*2)); c.setShadow(offset: .zero, blur: 0, color: nil)
-        let s = NSAttributedString(string: "\(a.step)", attributes: [.font: NSFont.systemFont(ofSize: radius, weight: .bold), .foregroundColor: NSColor.white]); let line = CTLineCreateWithAttributedString(s); let bounds = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
-        c.saveGState(); c.translateBy(x: center.x - bounds/2, y: center.y + radius/3); c.scaleBy(x: 1, y: -1)
-        c.textMatrix = .identity; c.textPosition = .zero; CTLineDraw(line,c); c.restoreGState()
+    private static func drawText(_ text: AnnotationGeometry.Text, in c: CGContext) {
+        c.saveGState(); c.translateBy(x: text.baseline.x, y: text.baseline.y); c.scaleBy(x: 1, y: -1)
+        c.textMatrix = .identity; c.textPosition = .zero; CTLineDraw(text.line, c); c.restoreGState()
     }
     private static func backgroundCGColor(_ b: AnnotationBackground) -> CGColor {
         switch b { case .none: NSColor.clear.cgColor; case .midnight: NSColor(calibratedRed:0.12,green:0.15,blue:0.22,alpha:1).cgColor; case .lavender: NSColor(calibratedRed:0.47,green:0.36,blue:0.67,alpha:1).cgColor; case .peach: NSColor(calibratedRed:0.9,green:0.5,blue:0.36,alpha:1).cgColor }
