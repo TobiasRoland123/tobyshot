@@ -1,0 +1,8 @@
+# Bundled annotation fonts
+
+- **Excalifont Regular** — Copyright (c) 2024 Excalidraw; based on Virgil by Ellinor Rapp, with modifications by Ján Filípek / DizajnDesign. SIL Open Font License 1.1. Derived by combining the seven complete Unicode-range WOFF2 subsets shipped by Excalidraw. Upstream: [Excalidraw Excalifont assets](https://github.com/excalidraw/excalidraw/tree/2d3707b816100ee2734bae2b9efc3f7641ab427b/packages/excalidraw/fonts/Excalifont), commit `2d3707b816100ee2734bae2b9efc3f7641ab427b`.
+- **Virgil** — Copyright (c) 2021–present Ellinor Rapp. SIL Open Font License 1.1; Reserved Font Name: Virgil. Converted from the upstream WOFF2 without changing its font data. Upstream: [Excalidraw Virgil](https://github.com/excalidraw/virgil/tree/3d4c829dc85b455d4646631ac52bc1517df04217), commit `3d4c829dc85b455d4646631ac52bc1517df04217`.
+
+The fonts were decompressed from WOFF2 to OpenType sfnt using FontTools and Brotli; the Excalifont Unicode subsets were merged with FontTools. The bundled font files are distributed under their respective OFL 1.1 licenses above.
+
+Virgil is a lossless WOFF2 decompression using `TTFont(source, recalcTimestamp=False)`, setting `flavor = None` and saving the sfnt. All font tables were compared with the decompressed upstream tables: glyphs, character mappings, metrics, names, metadata, and original timestamps are unchanged; only the container checksum adjustment differs. The upstream name table retains a historical personal-use string; the accompanying OFL is copied from the same official repository. See the OFL's guidance on [functional equivalence of TTF/OTF and WOFF2](https://openfontlicense.org/webfonts-and-reserved-font-names/).

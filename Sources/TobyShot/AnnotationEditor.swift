@@ -200,6 +200,10 @@ struct EditorAnnotation: Identifiable, Equatable {
     var step: Int = 1
     var shadow = true
     var reversed = false
+    var font: AnnotationFont = .system
+    var arrowStyle: AnnotationArrowStyle = .clean
+    var arrowStroke: AnnotationArrowStroke = .solid
+    var arrowSeed: UInt64 = .random(in: 1...UInt64.max)
 }
 
 struct EditorState {
@@ -226,9 +230,9 @@ final class AnnotationEditorModel: ObservableObject {
     @Published var strokeWidth: CGFloat = 5 {
         didSet { updateEditingTextAppearance(width: strokeWidth) }
     }
-    @Published var background: AnnotationBackground = .none
-    @Published var padding: CGFloat = 36
-    @Published var cornerRadius: CGFloat = 18
+    @Published private(set) var background: AnnotationBackground = .none
+    @Published private(set) var padding: CGFloat = 36
+    @Published private(set) var cornerRadius: CGFloat = 18
     @Published var zoom: CGFloat = 0
     @Published var annotations: [EditorAnnotation] = []
     @Published var cropRect: CGRect?
@@ -247,6 +251,8 @@ final class AnnotationEditorModel: ObservableObject {
     private var textResize: AnnotationTextResize?
     private var cropAnchor: CGPoint?
     private var savedState: EditorState?
+    private var isEditingBackground = false
+    private var backgroundEditCheckpointed = false
     private var textEditOriginalState: EditorState?
 
     init(image: NSImage, sourceURL: URL?) {
@@ -268,18 +274,47 @@ final class AnnotationEditorModel: ObservableObject {
     }
     func markSaved() { finishTextEditing(); savedState = state() }
     private func state() -> EditorState { EditorState(image: image, annotations: annotations, crop: nil, background: background, padding: padding, cornerRadius: cornerRadius) }
-    private func checkpoint() {
+    private func checkpoint(coalescingBackgroundEdit: Bool = false) {
         finishTextEditing()
+        if coalescingBackgroundEdit, isEditingBackground {
+            guard !backgroundEditCheckpointed else { return }
+            backgroundEditCheckpointed = true
+        } else {
+            setBackgroundEditing(false)
+        }
         undoStack.append(state()); redoStack.removeAll(); selectedID = nil
+    }
+
+    func setBackgroundEditing(_ isEditing: Bool) {
+        isEditingBackground = isEditing
+        backgroundEditCheckpointed = false
+    }
+
+    func updateBackground(style: AnnotationBackground) {
+        guard style != background else { return }
+        checkpoint()
+        background = style
+    }
+
+    func updateBackground(padding: CGFloat? = nil, cornerRadius: CGFloat? = nil) {
+        let newPadding = padding ?? self.padding
+        let newCornerRadius = cornerRadius ?? self.cornerRadius
+        guard newPadding != self.padding || newCornerRadius != self.cornerRadius else { return }
+        // Checkpoint the first changed value of a slider gesture; subsequent values update its preview.
+        checkpoint(coalescingBackgroundEdit: true)
+        self.padding = newPadding
+        self.cornerRadius = newCornerRadius
     }
 
     func undo() {
         finishTextEditing()
+        setBackgroundEditing(false)
         guard let previous = undoStack.popLast() else { return }
         redoStack.append(state()); restore(previous)
     }
     func redo() {
         finishTextEditing()
+        setBackgroundEditing(false)
         guard let next = redoStack.popLast() else { return }
         undoStack.append(state()); restore(next)
     }
@@ -314,6 +349,7 @@ final class AnnotationEditorModel: ObservableObject {
         guard annotations.contains(where: { $0.id == id && $0.kind == .text }) else { return false }
         if editingTextID == id { return true }
         finishTextEditing()
+        setBackgroundEditing(false)
         textEditOriginalState = state()
         selectedID = id
         editingTextID = id
@@ -379,6 +415,7 @@ final class AnnotationEditorModel: ObservableObject {
             if let hit = annotation(at: point), hit.kind == .text {
                 beginTextEditing(hit.id)
             } else {
+                setBackgroundEditing(false)
                 textEditOriginalState = state()
                 let annotation = make(.text, at: point, end: point)
                 annotations.append(annotation)
@@ -459,7 +496,11 @@ final class AnnotationEditorModel: ObservableObject {
     }
 
     private func make(_ kind: EditorAnnotation.Kind, at start: CGPoint, end: CGPoint, text: String = "", step: Int = 1) -> EditorAnnotation {
-        EditorAnnotation(kind: kind, start: start, end: end, color: color, width: strokeWidth, text: text, step: step, shadow: annotationShadow, reversed: UserDefaults.standard.bool(forKey: "inverseArrow") != NSEvent.modifierFlags.contains(.option))
+        EditorAnnotation(kind: kind, start: start, end: end, color: color, width: strokeWidth, text: text, step: step, shadow: annotationShadow,
+                         reversed: UserDefaults.standard.bool(forKey: "inverseArrow") != NSEvent.modifierFlags.contains(.option),
+                         font: AnnotationFont(rawValue: Preferences.string("annotationFont")) ?? .system,
+                         arrowStyle: AnnotationArrowStyle(rawValue: Preferences.string("annotationArrowStyle")) ?? .clean,
+                         arrowStroke: AnnotationArrowStroke(rawValue: Preferences.string("annotationArrowStroke")) ?? .solid)
     }
     private func rect(from a: CGPoint, to b: CGPoint) -> CGRect { CGRect(x: min(a.x,b.x), y: min(a.y,b.y), width: abs(a.x-b.x), height: abs(a.y-b.y)) }
     func annotationBounds(_ a: EditorAnnotation) -> CGRect { AnnotationGeometry(a, imageSize: pixelSize).renderedBounds }
@@ -551,7 +592,7 @@ private struct AnnotationEditorRoot: View {
                 }
             }.labelsHidden().pickerStyle(.menu).frame(width: 74).help("Stroke width; also controls text size")
             Menu {
-                ForEach(AnnotationBackground.allCases) { background in Button(background.title) { model.background = background; model.showBackgroundPanel = true } }
+                ForEach(AnnotationBackground.allCases) { background in Button(background.title) { model.updateBackground(style: background); model.showBackgroundPanel = true } }
             } label: { Label("Background", systemImage: "square.on.square") }
                 .menuStyle(.borderlessButton).fixedSize().help("Canvas background (\(shortcuts.label(for: .backgroundTool)))")
         }.fixedSize()
@@ -585,11 +626,18 @@ private struct AnnotationEditorRoot: View {
     private var backgroundPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("BACKGROUND").font(.caption.bold()).foregroundStyle(.secondary)
-            ForEach(AnnotationBackground.allCases) { b in Button { model.background = b } label: { HStack { Circle().fill(backgroundColor(b)).frame(width: 16, height: 16); Text(b.title); Spacer(); if model.background == b { Image(systemName: "checkmark") } }.contentShape(Rectangle()) }.buttonStyle(.plain) }
-            Divider(); VStack(alignment: .leading) { Text("Padding"); Slider(value: $model.padding, in: 0...120, step: 4) }
-            VStack(alignment: .leading) { Text("Corner radius"); Slider(value: $model.cornerRadius, in: 0...48, step: 2) }
+            ForEach(AnnotationBackground.allCases) { b in Button { model.updateBackground(style: b) } label: { HStack { Circle().fill(backgroundColor(b)).frame(width: 16, height: 16); Text(b.title); Spacer(); if model.background == b { Image(systemName: "checkmark") } }.contentShape(Rectangle()) }.buttonStyle(.plain) }
+            Divider(); VStack(alignment: .leading) {
+                Text("Padding")
+                Slider(value: Binding(get: { model.padding }, set: { model.updateBackground(padding: $0) }), in: 0...120, step: 4, onEditingChanged: model.setBackgroundEditing)
+            }
+            VStack(alignment: .leading) {
+                Text("Corner radius")
+                Slider(value: Binding(get: { model.cornerRadius }, set: { model.updateBackground(cornerRadius: $0) }), in: 0...48, step: 2, onEditingChanged: model.setBackgroundEditing)
+            }
             Spacer()
         }.padding(14).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12)).padding(.vertical, 14)
+            .onDisappear { model.setBackgroundEditing(false) }
     }
     private func backgroundColor(_ b: AnnotationBackground) -> Color {
         switch b { case .none: .clear; case .midnight: Color(red: 0.14, green: 0.17, blue: 0.25); case .lavender: Color(red: 0.48, green: 0.38, blue: 0.68); case .peach: Color(red: 0.88, green: 0.48, blue: 0.35) }

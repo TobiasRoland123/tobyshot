@@ -71,6 +71,26 @@ struct AnnotationGeometryTests {
         for annotation in annotations { try assertObjectExportMatchesCanvas(annotation) }
     }
 
+    @Test(arguments: AnnotationArrowStyle.allCases, AnnotationArrowStroke.allCases)
+    func arrowStylesKeepTheirFullPaintInObjectExports(style: AnnotationArrowStyle, stroke: AnnotationArrowStroke) throws {
+        for reversed in [false, true] {
+            for end in [CGPoint(x: 210, y: 48), CGPoint(x: 94, y: 91), CGPoint(x: 90, y: 90)] {
+                let arrow = EditorAnnotation(kind: .arrow, start: CGPoint(x: 90, y: 90), end: end,
+                    color: .systemBlue, width: 8, shadow: true, reversed: reversed,
+                    arrowStyle: style, arrowStroke: stroke, arrowSeed: 42)
+                #expect(AnnotationGeometry(arrow).path == AnnotationGeometry(arrow).path)
+                try assertObjectExportMatchesCanvas(arrow)
+            }
+        }
+    }
+
+    @Test(arguments: AnnotationFont.allCases)
+    func annotationFontsExportMultilineAccentsWithoutClipping(font: AnnotationFont) throws {
+        let annotation = EditorAnnotation(kind: .text, start: CGPoint(x: 40, y: 60), end: .zero,
+            width: 8, text: "Æblegrød, Øresund\nÅngström — Égjyp 😀", shadow: true, font: font)
+        try assertObjectExportMatchesCanvas(annotation)
+    }
+
     @Test func textMetricsIncludeAccentsDescendersAndShadow() throws {
         let annotation = EditorAnnotation(
             kind: .text,

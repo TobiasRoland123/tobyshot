@@ -11,7 +11,7 @@ final class AnnotationTextLayout {
     }
 
     static func attributes(for annotation: EditorAnnotation) -> [NSAttributedString.Key: Any] {
-        [.font: NSFont.systemFont(ofSize: fontSize(for: annotation), weight: .bold),
+        [.font: annotation.font.font(ofSize: fontSize(for: annotation)),
          .foregroundColor: annotation.color]
     }
 

@@ -49,6 +49,9 @@ struct SettingsView: View {
     @AppStorage("recordingMicrophone") private var recordingMicrophone = false
 
     @AppStorage("inverseArrow") private var inverseArrow = false
+    @AppStorage("annotationFont") private var annotationFont: AnnotationFont = .system
+    @AppStorage("annotationArrowStyle") private var annotationArrowStyle: AnnotationArrowStyle = .clean
+    @AppStorage("annotationArrowStroke") private var annotationArrowStroke: AnnotationArrowStroke = .solid
     @AppStorage("smoothDrawing") private var smoothDrawing = true
     @AppStorage("annotationShadow") private var annotationShadow = true
     @AppStorage("editorAlwaysOnTop") private var editorAlwaysOnTop = false
@@ -347,6 +350,15 @@ struct SettingsView: View {
 
     private var annotatePage: some View {
         VStack(alignment: .leading, spacing: 20) {
+            group("Appearance") {
+                PickerRow("Text font", selection: $annotationFont, options: AnnotationFont.allCases, titleForValue: { $0.title })
+                PickerRow("Arrow style", selection: $annotationArrowStyle, options: AnnotationArrowStyle.allCases, titleForValue: { $0.title })
+                PickerRow("Arrow stroke", selection: $annotationArrowStroke, options: AnnotationArrowStroke.allCases, titleForValue: { $0.title })
+                Text("Choose Excalifont or Virgil with hand-drawn arrows for an Excalidraw feel. Changes apply to new annotations.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
+                annotationPreview
+            }
             group("Tools") {
                 ToggleRow("Inverse arrow direction", isOn: $inverseArrow)
                 ToggleRow("Smooth drawing", isOn: $smoothDrawing)
@@ -359,6 +371,29 @@ struct SettingsView: View {
                 ToggleRow("Show color names", isOn: $showColorNames)
             }
         }
+    }
+
+    private var annotationPreview: some View {
+        // Render at Retina resolution so the resized settings preview stays sharp.
+        let size = CGSize(width: 1000, height: 280)
+        let source = NSImage(size: size, flipped: false) { rect in
+            NSColor.white.setFill()
+            rect.fill()
+            return true
+        }
+        let annotations = [
+            EditorAnnotation(kind: .text, start: CGPoint(x: 48, y: 40), end: .zero,
+                             color: .black, width: 12, text: "Make it your own", shadow: annotationShadow, font: annotationFont),
+            EditorAnnotation(kind: .arrow, start: CGPoint(x: 56, y: 214), end: CGPoint(x: 932, y: 182),
+                             color: NSColor(calibratedRed: 0.2, green: 0.4, blue: 0.85, alpha: 1), width: 6,
+                             shadow: annotationShadow, reversed: inverseArrow,
+                             arrowStyle: annotationArrowStyle, arrowStroke: annotationArrowStroke, arrowSeed: 42)
+        ]
+        return Image(nsImage: AnnotationRenderer.render(image: source, annotations: annotations))
+            .resizable().aspectRatio(contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .padding(.bottom, 9)
+            .accessibilityLabel("Preview: \(annotationFont.title) text and \(annotationArrowStyle.title.lowercased()) \(annotationArrowStroke.title.lowercased()) arrow")
     }
 
     private var cloudPage: some View {

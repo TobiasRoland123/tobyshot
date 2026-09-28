@@ -53,19 +53,12 @@ struct AnnotationGeometry {
         case .ellipse:
             path.addEllipse(in: rect)
             stroked = true
-        case .line, .arrow:
-            let from = a.reversed && a.kind == .arrow ? a.end : a.start
-            let to = a.reversed && a.kind == .arrow ? a.start : a.end
-            path.move(to: from)
-            path.addLine(to: to)
-            if a.kind == .arrow {
-                let angle = atan2(to.y - from.y, to.x - from.x)
-                let head = max(10, a.width * 3)
-                for direction in [angle - .pi / 6, angle + .pi / 6] {
-                    path.move(to: to)
-                    path.addLine(to: CGPoint(x: to.x - head * cos(direction), y: to.y - head * sin(direction)))
-                }
-            }
+        case .line:
+            path.move(to: a.start)
+            path.addLine(to: a.end)
+            stroked = true
+        case .arrow:
+            path.addPath(AnnotationArrowPath.make(a))
             stroked = true
         case .freehand:
             if let first = a.points.first {

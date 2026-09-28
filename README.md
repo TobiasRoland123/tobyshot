@@ -36,6 +36,7 @@ Use **Check access** in the library or make a capture attempt to check screen re
 - Area, full-screen, window, and timed screenshots. Full-screen capture follows the display under the pointer; area/window selection supports all connected displays.
 - A floating Quick Access preview with save, copy, annotate, pin, recognize text, and reveal in Finder.
 - Annotation tools: arrows, rectangles, filled rectangles, ellipses, lines, freehand, text, numbered steps, opaque redaction, pixelation, crop, move/delete, undo/redo, zoom, and backgrounds.
+- Annotation appearance: bundled Excalifont and classic Virgil text fonts, plus clean, sketch, and hand-drawn arrows with solid, dashed, or dotted strokes.
 - MP4 screen or area recording with optional system audio and microphone, 15/30/60 fps, resolution limits, countdown, and stop controls.
 - Text recognition on the Mac with automatic, English, and Danish language selection.
 - Persistent settings for export, post-capture actions, preview behavior, image output, recording, annotation, file naming, clipboard, retention, backgrounds, and pinned images.
@@ -66,6 +67,8 @@ Defaults match the supplied CleanShot references for supported features. Open Fr
 Click a shortcut and press the new combination; Escape cancels and Delete clears. Changes apply immediately and survive relaunch. **Restore Defaults** removes your overrides. Conflicts with TobyShot, macOS, and other apps leave the previous assignment intact. To resolve macOS screenshot conflicts, choose another combination or reassign the system keys under **System Settings → Keyboard → Keyboard Shortcuts → Screenshots**. TobyShot does not change system shortcuts.
 
 Right-click a library capture for export, OCR, pinning, Finder, and history actions. Closing the library leaves TobyShot running in the menu bar; quit from the application or menu bar menu.
+
+**Settings → Annotate → Appearance** previews and saves the font and arrow defaults. They apply to new annotations, including in already-open editors. Existing annotations retain their appearance when edited, moved, duplicated, undone, or exported. The fonts work offline and their licenses and sources are bundled in `Sources/TobyShot/Resources/Fonts`.
 
 ## Local files
 

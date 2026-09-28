@@ -6,7 +6,10 @@ let package = Package(
     platforms: [.macOS(.v15)],
     products: [.executable(name: "TobyShot", targets: ["TobyShot"])],
     targets: [
-        .executableTarget(name: "TobyShot"),
+        .executableTarget(
+            name: "TobyShot",
+            resources: [.copy("Resources/Fonts")]
+        ),
         .testTarget(name: "TobyShotTests", dependencies: ["TobyShot"])
     ],
     swiftLanguageModes: [.v5]

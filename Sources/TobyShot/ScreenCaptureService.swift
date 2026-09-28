@@ -141,10 +141,20 @@ enum CaptureGeometry {
 
 @MainActor
 final class ScreenRecorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegate {
-    private var stream: SCStream?
-    private var output: SCRecordingOutput?
-    private var completion: ((Result<URL, Error>) -> Void)?
-    private var file: URL?
+    final class Session {
+        let stream: SCStream
+        let output: SCRecordingOutput
+        let file: URL
+        let size: CGSize
+        var completion: ((Result<URL, Error>) -> Void)?
+
+        init(stream: SCStream, output: SCRecordingOutput, file: URL, size: CGSize, completion: @escaping (Result<URL, Error>) -> Void) {
+            self.stream = stream; self.output = output; self.file = file
+            self.size = size; self.completion = completion
+        }
+    }
+
+    private var session: Session?
     private(set) var size: CGSize = .zero
 
     func start(target: RecordingTarget, completion: @escaping (Result<URL, Error>) -> Void) async throws {
@@ -154,7 +164,7 @@ final class ScreenRecorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegat
         }
         let config = SCStreamConfiguration()
         config.sourceRect = target.rect
-        size = CaptureGeometry.recordingSize(target.rect.size, scale: Preferences.bool("recordingOneX") ? 1 : target.scale, maximum: Preferences.string("recordingResolution"))
+        let size = CaptureGeometry.recordingSize(target.rect.size, scale: Preferences.bool("recordingOneX") ? 1 : target.scale, maximum: Preferences.string("recordingResolution"))
         config.width = Int(size.width); config.height = Int(size.height)
         config.minimumFrameInterval = CMTime(value: 1, timescale: Int32(max(1, Preferences.int("recordingFPS"))))
         config.showsCursor = Preferences.bool("recordingCursor")
@@ -170,38 +180,58 @@ final class ScreenRecorder: NSObject, SCRecordingOutputDelegate, SCStreamDelegat
         recordingConfig.videoCodecType = .h264
         let stream = SCStream(filter: target.filter, configuration: config, delegate: self)
         let output = SCRecordingOutput(configuration: recordingConfig, delegate: self)
-        try stream.addRecordingOutput(output)
-        self.stream = stream; self.output = output; self.file = url; self.completion = completion
-        do { try await stream.startCapture() }
-        catch { self.completion = nil; self.stream = nil; self.output = nil; try? FileManager.default.removeItem(at: url); throw error }
+        try await start(session: Session(stream: stream, output: output, file: url, size: size, completion: completion))
+    }
+
+    func start(session: Session) async throws {
+        guard self.session == nil else { throw TobyError.message("A recording is already in progress.") }
+        try session.stream.addRecordingOutput(session.output)
+        self.session = session
+        size = session.size
+        do { try await session.stream.startCapture() }
+        catch {
+            // start() reports its own error; a delayed failure must not clear a retry.
+            finish(session, with: .failure(error), notify: false)
+            throw error
+        }
     }
 
     func stop() async {
-        do { try await stream?.stopCapture() }
-        catch { finish(.failure(error)) }
+        guard let session else { return }
+        do { try await session.stream.stopCapture() }
+        catch { finish(session, with: .failure(error)) }
     }
 
     nonisolated func recordingOutputDidFinishRecording(_ recordingOutput: SCRecordingOutput) {
         Task { @MainActor in
-            guard let file else { return }
-            finish(.success(file))
+            guard let session, session.output === recordingOutput else { return }
+            finish(session, with: .success(session.file))
         }
     }
     nonisolated func recordingOutput(_ recordingOutput: SCRecordingOutput, didFailWithError error: Error) {
-        Task { @MainActor in finish(.failure(error)) }
+        Task { @MainActor in
+            guard let session, session.output === recordingOutput else { return }
+            finish(session, with: .failure(error))
+        }
     }
     nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
-        Task { @MainActor in finish(.failure(error)) }
-    }
-    private func finish(_ result: Result<URL, Error>) {
-        let callback = completion
-        completion = nil
-        if case .failure = result {
-            let activeStream = stream
-            Task { try? await activeStream?.stopCapture() }
-            if let file { try? FileManager.default.removeItem(at: file) }
+        Task { @MainActor in
+            guard let session, session.stream === stream else { return }
+            finish(session, with: .failure(error))
         }
-        stream = nil; output = nil; file = nil
-        callback?(result)
+    }
+    private func finish(_ session: Session, with result: Result<URL, Error>, notify: Bool = true) {
+        guard self.session === session else { return }
+        // Detach before cleanup or the callback can start another recording.
+        self.session = nil
+        let callback = session.completion
+        session.completion = nil
+        if case .failure = result {
+            Task {
+                try? await session.stream.stopCapture()
+                try? FileManager.default.removeItem(at: session.file)
+            }
+        }
+        if notify { callback?(result) }
     }
 }

@@ -18,6 +18,7 @@ enum Preferences {
             "recordingCursor": true, "recordingFPS": 30, "recordingResolution": "Original",
             "recordingOneX": false, "recordingSystemAudio": false, "recordingMicrophone": false,
             "inverseArrow": false, "smoothDrawing": true, "annotationShadow": true,
+            "annotationFont": "system", "annotationArrowStyle": "clean", "annotationArrowStroke": "solid",
             "editorAlwaysOnTop": false, "showColorNames": false,
             "filenameTemplate": "TobyShot {date} at {time}", "askFilename": false, "retinaSuffix": false,
             "clipboardMode": "File & Image", "historyDays": 7, "ocrLineBreaks": true, "ocrLanguage": "Automatic",

@@ -58,9 +58,10 @@ final class CaptureStore: ObservableObject {
         let id = UUID()
         let pixels = try ImageOutput.cgImage(image)
         let item = CaptureItem(id: id, filename: "\(id.uuidString).png", title: title ?? CaptureNaming.filename(template: Preferences.string("filenameTemplate")), date: Date(), kind: .image, width: pixels.width, height: pixels.height)
-        try ImageOutput.data(image, format: "PNG").write(to: url(for: item), options: .atomic)
-        items.insert(item, at: 0)
-        try persist()
+        let file = url(for: item)
+        try commit([item] + items, creating: file) {
+            try ImageOutput.data(image, format: "PNG").write(to: file, options: .atomic)
+        }
         return item
     }
 
@@ -68,25 +69,26 @@ final class CaptureStore: ObservableObject {
     func add(video url: URL, size: CGSize) throws -> CaptureItem {
         let id = UUID()
         let item = CaptureItem(id: id, filename: "\(id.uuidString).mp4", title: CaptureNaming.filename(template: Preferences.string("filenameTemplate")), date: Date(), kind: .video, width: Int(size.width), height: Int(size.height))
-        try FileManager.default.moveItem(at: url, to: self.url(for: item))
-        items.insert(item, at: 0)
-        try persist()
+        let file = self.url(for: item)
+        // Keep the source recoverable until its history entry is durable.
+        try commit([item] + items, creating: file, removing: url) {
+            try FileManager.default.copyItem(at: url, to: file)
+        }
         return item
     }
 
     func markExported(_ item: CaptureItem, at url: URL) throws {
         guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
-        items[index].exportedPath = url.path
-        try persist()
+        var updatedItems = items
+        updatedItems[index].exportedPath = url.path
+        try commit(updatedItems)
     }
 
     func remove(_ item: CaptureItem) throws {
         // Only TobyShot's own history copy is removed. Exported originals stay where the user saved them.
-        let file = url(for: item)
-        if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
-        items.removeAll { $0.id == item.id }
+        // Retain the original file until the index commits, so failure needs no file restoration.
+        try commit(items.filter { $0.id != item.id }, removing: url(for: item))
         thumbnails[item.id] = nil
-        try persist()
     }
 
     func prune(now: Date = Date()) throws {
@@ -96,7 +98,26 @@ final class CaptureStore: ObservableObject {
         for item in items.filter({ $0.date < cutoff }) { try remove(item) }
     }
 
-    private func persist() throws { try JSONEncoder().encode(items).write(to: indexURL, options: .atomic) }
+    private func commit(_ updatedItems: [CaptureItem], creating newFile: URL? = nil, removing obsoleteFile: URL? = nil, prepare: () throws -> Void = {}) throws {
+        let data = try JSONEncoder().encode(updatedItems)
+        do {
+            try prepare()
+            try data.write(to: indexURL, options: .atomic)
+        } catch {
+            if let newFile { cleanUp(newFile) }
+            throw error
+        }
+        // The index is committed. Cleanup failures retain an extra file and must not report
+        // the mutation as failed when it will be visible after reopening the store.
+        if let obsoleteFile { cleanUp(obsoleteFile) }
+        items = updatedItems
+    }
+
+    private func cleanUp(_ file: URL) {
+        guard FileManager.default.fileExists(atPath: file.path) else { return }
+        do { try FileManager.default.removeItem(at: file) }
+        catch { NSLog("TobyShot history cleanup at %@: %@", file.path, error.localizedDescription) }
+    }
 }
 
 enum TobyError: LocalizedError {

@@ -88,6 +88,29 @@ struct TobyShotTests {
     }
 
     @Test
+    func testPixelationObjectExportClipsToSourcePixelsWithoutShadow() throws {
+        let source = fixture()
+        let annotation = EditorAnnotation(kind: .pixelation, start: CGPoint(x: -12.3, y: -5.4), end: CGPoint(x: 32.2, y: 25.1), width: 20, shadow: true)
+        let model = AnnotationEditorModel(image: source, sourceURL: nil)
+        // Pixelation paints whole pixels inside the source, even when dragged beyond it.
+        #expect(model.annotationBounds(annotation) == CGRect(x: 0, y: 0, width: 33, height: 26))
+        let exported = try #require(AnnotationRenderer.render(annotation: annotation, sourceImage: source))
+        let bitmap = NSBitmapImageRep(cgImage: try ImageOutput.cgImage(exported))
+        #expect(bitmap.pixelsWide == 35)
+        #expect(bitmap.pixelsHigh == 28)
+        for point in [(0, 14), (34, 14), (17, 0), (17, 27)] {
+            #expect(try #require(bitmap.colorAt(x: point.0, y: point.1)).alphaComponent == 0)
+        }
+        let pixel = try #require(bitmap.colorAt(x: 1, y: 1)?.usingColorSpace(.deviceRGB))
+        #expect(pixel.redComponent > 0.9)
+        #expect(pixel.blueComponent < 0.1)
+        #expect(pixel.alphaComponent == 1)
+
+        let outside = EditorAnnotation(kind: .pixelation, start: CGPoint(x: 130, y: 110), end: CGPoint(x: 150, y: 130))
+        #expect(AnnotationRenderer.render(annotation: outside, sourceImage: source) == nil)
+    }
+
+    @Test
     func testCropUsesTopLeftCoordinatesAndUndoRestoresSource() throws {
         let original = fixture()
         let model = AnnotationEditorModel(image: original, sourceURL: nil)
