@@ -108,6 +108,7 @@ struct AnnotationTextEditingTests {
         model.undo()
         #expect(model.canRedo)
 
+        model.tool = .text
         model.begin(at: CGPoint(x: 48, y: 56))
         model.finishTextEditing()
 

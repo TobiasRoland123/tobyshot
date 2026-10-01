@@ -58,7 +58,7 @@ private struct QuickAccessView: View {
             } else {
                 Button { app.annotate(item) } label: { Image(systemName: "play.circle.fill").font(.system(size: 42)).frame(maxWidth: .infinity, maxHeight: .infinity) }.buttonStyle(.plain)
             }
-            HStack(spacing: 17) {
+            HStack(spacing: 13) {
                 action("square.and.arrow.down", "Save") { app.save(item, ask: NSEvent.modifierFlags.contains(.option)) }
                 action("doc.on.doc", "Copy") { app.copy(item); close() }
                 if item.kind == .image {
@@ -95,6 +95,10 @@ private final class DragImageView: NSImageView, NSDraggingSource {
     var onOpen: (() -> Void)?
     var onDragEnd: (() -> Void)?
     private var isDragging = false
+    // The preview supplies the size; the thumbnail must not enlarge its window.
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+    }
     override func mouseDown(with event: NSEvent) { isDragging = false }
     override func mouseUp(with event: NSEvent) { if !isDragging { onOpen?() } }
     override func mouseDragged(with event: NSEvent) {

@@ -9,10 +9,13 @@ enum CaptureIntent {
 
 @MainActor
 final class AppCoordinator: ObservableObject {
-    let store = CaptureStore()
+    let store: CaptureStore
     let shortcuts: HotKeyManager
 
-    init(shortcuts: HotKeyManager) { self.shortcuts = shortcuts }
+    init(shortcuts: HotKeyManager, store: CaptureStore? = nil) {
+        self.shortcuts = shortcuts
+        self.store = store ?? CaptureStore()
+    }
     @Published var isBusy = false
     @Published var isRecording = false
     @Published var isStopping = false
@@ -28,6 +31,8 @@ final class AppCoordinator: ObservableObject {
     private let captureService = ScreenCaptureService()
     private let recorder = ScreenRecorder()
     private var editors: [AnnotationEditorWindow] = []
+    private var lastSavedEditor: AnnotationEditorWindow?
+    private var lastSavedClipboardChangeCount: Int?
     private var pins: [NSWindowController] = []
     private var preview: QuickAccessWindow?
     private var previewItem: CaptureItem?
@@ -39,6 +44,7 @@ final class AppCoordinator: ObservableObject {
     private var noticeTask: Task<Void, Never>?
     private var recordingStarted: Date?
     private var verifiedScreenPermission: Bool?
+    private var shutterSound: NSSound?
 
     var recordingTime: String { String(format: "%02d:%02d", recordingSeconds / 60, recordingSeconds % 60) }
 
@@ -71,11 +77,11 @@ final class AppCoordinator: ObservableObject {
             defer { isBusy = false; countdown = nil; countdownPanel?.close(); countdownPanel = nil; countdownTask = nil }
             do {
                 if delayed { try await runCountdown(Preferences.int("selfTimer")) }
-                else { try await Task.sleep(for: .milliseconds(250)) }
+                else if mode != .area { try await Task.sleep(for: .milliseconds(250)) }
                 guard !Task.isCancelled else { return }
                 let result = try await (previousArea ? captureService.capturePreviousArea() : captureService.capture(mode))
                 confirmScreenPermission()
-                guard let result else { showLibrary?(); return }
+                guard let result else { return }
                 let background = result.isWindow && Preferences.string("windowBackground") == "Wallpaper" ? Preferences.string("wallpaperStyle") : nil
                 let image = try ImageOutput.prepared(result.image, scale: result.scale, background: background, padding: CGFloat(Preferences.double("windowPadding")))
                 let item = try store.add(image: image)
@@ -93,7 +99,7 @@ final class AppCoordinator: ObservableObject {
                 case .pin: pin(image)
                 case .recognizeText(let keepLines): recognizeText(item, keepLines: keepLines)
                 }
-            } catch is CancellationError { showLibrary?() }
+            } catch is CancellationError { return }
             catch { showLibrary?(); report(error) }
         }
     }
@@ -174,6 +180,13 @@ final class AppCoordinator: ObservableObject {
         openEditor(image, source: url)
     }
     func pasteImage() {
+        if let editor = lastSavedEditor, lastSavedClipboardChangeCount == NSPasteboard.general.changeCount {
+            if !editors.contains(where: { $0 === editor }) { editors.append(editor) }
+            preview?.close()
+            editor.showWindow(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
         if let images = NSPasteboard.general.readObjects(forClasses: [NSImage.self]) as? [NSImage], let image = images.first { openEditor(image) }
         else if let urls = NSPasteboard.general.readObjects(forClasses: [NSURL.self]) as? [URL], let url = urls.first { openImage(at: url) }
         else { toast("Copy an image first, then paste it here.") }
@@ -186,7 +199,8 @@ final class AppCoordinator: ObservableObject {
         openEditor(image, source: store.url(for: item))
     }
 
-    private func openEditor(_ image: NSImage, source: URL? = nil) {
+    @discardableResult
+    func openEditor(_ image: NSImage, source: URL? = nil) -> AnnotationEditorWindow {
         editors.removeAll { $0.window?.isVisible == false }
         weak var editorWindow: NSWindow?
         let editor = AnnotationEditorWindow(image: image, sourceURL: source, shortcuts: shortcuts, onSave: { [weak self] image, ask in
@@ -209,9 +223,14 @@ final class AppCoordinator: ObservableObject {
                 self.copy(item)
             } catch { self?.report(error) }
         }, onPin: { [weak self] image in self?.pin(image) })
+        editor.onSaveAndClose = { [weak self] editor in
+            self?.lastSavedEditor = editor
+            self?.lastSavedClipboardChangeCount = NSPasteboard.general.changeCount
+        }
         editorWindow = editor.window
         editors.append(editor); editor.showWindow(nil); editor.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        return editor
     }
 
     func confirmClosingEditors() -> Bool {
@@ -402,8 +421,16 @@ final class AppCoordinator: ObservableObject {
         }
     }
     private func playShutter() {
-        guard Preferences.bool("playSounds"), Preferences.string("shutterSound") != "None" else { return }
-        NSSound(named: NSSound.Name(Preferences.string("shutterSound")))?.play()
+        let name = Preferences.string("shutterSound")
+        guard Preferences.bool("playSounds"), name != "None" else { return }
+        if name == "Native capture" {
+            let directory = "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system"
+            shutterSound = NSSound(contentsOfFile: "\(directory)/Screen Capture.aif", byReference: true)
+                ?? NSSound(contentsOfFile: "\(directory)/Grab.aif", byReference: true)
+        } else {
+            shutterSound = NSSound(named: NSSound.Name(name))
+        }
+        shutterSound?.play()
     }
     private func showRecordingControls() {
         let panel = floatingPanel(size: CGSize(width: 268, height: 60))

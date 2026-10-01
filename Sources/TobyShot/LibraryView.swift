@@ -53,8 +53,8 @@ struct LibraryView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                Image(systemName: "viewfinder").font(.system(size: 23, weight: .semibold)).foregroundStyle(studioAccent)
-                    .frame(width: 38, height: 38).background(studioAccent.opacity(0.1), in: RoundedRectangle(cornerRadius: 11))
+                Image(nsImage: NSApplication.shared.applicationIconImage).resizable().scaledToFit()
+                    .frame(width: 38, height: 38).accessibilityLabel("TobyShot")
                 VStack(alignment: .leading, spacing: 3) {
                     Text("TobyShot").font(.system(size: 17, weight: .semibold))
                     Text("Your screen. Your story.").font(.system(size: 10)).foregroundStyle(.secondary)

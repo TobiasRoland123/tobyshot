@@ -3,6 +3,25 @@ import CoreText
 
 /// Geometry in the editor's top-left pixel coordinates, shared by drawing and bounds.
 struct AnnotationGeometry {
+    static func constrainedEndpoint(from start: CGPoint, to point: CGPoint, kind: EditorAnnotation.Kind) -> CGPoint {
+        let dx = point.x - start.x
+        let dy = point.y - start.y
+        switch kind {
+        case .line, .arrow:
+            let step = CGFloat.pi / 4
+            let angle = (atan2(dy, dx) / step).rounded() * step
+            // Exact axis/diagonal directions avoid tiny offsets on horizontal and vertical lines.
+            let direction = CGPoint(x: cos(angle).rounded(), y: sin(angle).rounded())
+            let distance = hypot(dx, dy) / hypot(direction.x, direction.y)
+            return CGPoint(x: start.x + direction.x * distance, y: start.y + direction.y * distance)
+        case .rectangle, .filledRectangle, .ellipse:
+            let side = max(abs(dx), abs(dy))
+            return CGPoint(x: start.x + (dx < 0 ? -side : side), y: start.y + (dy < 0 ? -side : side))
+        default:
+            return point
+        }
+    }
+
     struct Text {
         let line: CTLine
         let baseline: CGPoint
@@ -47,16 +66,11 @@ struct AnnotationGeometry {
         var stroked = false
         var pixelationRect = CGRect.null
         switch a.kind {
-        case .rectangle, .filledRectangle, .redaction:
+        case .redaction:
             path.addRect(rect)
-            stroked = a.kind == .rectangle
-        case .ellipse:
-            path.addEllipse(in: rect)
-            stroked = true
-        case .line:
-            path.move(to: a.start)
-            path.addLine(to: a.end)
-            stroked = true
+        case .rectangle, .filledRectangle, .ellipse, .line:
+            path.addPath(AnnotationShapePath.make(a, in: rect))
+            stroked = a.kind != .filledRectangle
         case .arrow:
             path.addPath(AnnotationArrowPath.make(a))
             stroked = true
@@ -74,8 +88,8 @@ struct AnnotationGeometry {
             textLayout = AnnotationTextLayout(a)
         case .step:
             let radius = max(15, a.width * 3.5)
-            path.addEllipse(in: CGRect(x: a.start.x - radius, y: a.start.y - radius,
-                                      width: radius * 2, height: radius * 2))
+            path.addPath(AnnotationShapePath.make(a, in: CGRect(x: a.start.x - radius, y: a.start.y - radius,
+                                                              width: radius * 2, height: radius * 2)))
             let line = CTLineCreateWithAttributedString(NSAttributedString(
                 string: "\(a.step)", attributes: [.font: NSFont.systemFont(ofSize: radius, weight: .bold), .foregroundColor: NSColor.white]))
             let width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))

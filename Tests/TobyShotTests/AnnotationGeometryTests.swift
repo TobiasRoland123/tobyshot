@@ -91,6 +91,16 @@ struct AnnotationGeometryTests {
         try assertObjectExportMatchesCanvas(annotation)
     }
 
+    @Test(arguments: AnnotationArrowStyle.allCases, AnnotationArrowStroke.allCases)
+    func bentArrowExportsIncludeCurveHeadsAndShadow(style: AnnotationArrowStyle, stroke: AnnotationArrowStroke) throws {
+        for reversed in [false, true] {
+            let arrow = EditorAnnotation(kind: .arrow, start: CGPoint(x: 40, y: 120), end: CGPoint(x: 210, y: 95),
+                color: .systemBlue, width: 8, shadow: true, reversed: reversed,
+                arrowStyle: style, arrowStroke: stroke, arrowSeed: 42, arrowBend: CGPoint(x: 25, y: -70))
+            try assertObjectExportMatchesCanvas(arrow)
+        }
+    }
+
     @Test func textMetricsIncludeAccentsDescendersAndShadow() throws {
         let annotation = EditorAnnotation(
             kind: .text,
@@ -112,6 +122,28 @@ struct AnnotationGeometryTests {
             shadow: true
         )
         try assertObjectExportMatchesCanvas(fallbackText)
+    }
+
+    @Test(arguments: AnnotationArrowStyle.allCases, AnnotationArrowStroke.allCases)
+    func shapeStylesExportTheirFullContoursAndShadows(style: AnnotationArrowStyle, stroke: AnnotationArrowStroke) throws {
+        for kind in [EditorAnnotation.Kind.rectangle, .filledRectangle, .ellipse, .line, .step] {
+            let shape = EditorAnnotation(kind: kind, start: CGPoint(x: 60, y: 60), end: CGPoint(x: 180, y: 130),
+                color: .systemBlue, width: 6, step: 2, shadow: true,
+                arrowStyle: style, arrowStroke: stroke, arrowSeed: 42)
+            try assertObjectExportMatchesCanvas(shape)
+        }
+    }
+
+    @Test func shapeStylesPreserveFreehandAndPrivacyToolGeometry() {
+        for kind in [EditorAnnotation.Kind.freehand, .redaction, .pixelation] {
+            let original = EditorAnnotation(kind: kind, start: CGPoint(x: 40, y: 50), end: CGPoint(x: 150, y: 100),
+                points: [CGPoint(x: 40, y: 50), CGPoint(x: 90, y: 110), CGPoint(x: 150, y: 100)])
+            var styled = original
+            styled.arrowStyle = .handDrawn
+            styled.arrowStroke = .dotted
+            #expect(AnnotationGeometry(styled).path == AnnotationGeometry(original).path)
+            #expect(AnnotationGeometry(styled).renderedBounds == AnnotationGeometry(original).renderedBounds)
+        }
     }
 
     @Test func multilineTextExportsEveryLineWithoutContainerSizedBounds() throws {

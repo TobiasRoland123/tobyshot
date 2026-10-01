@@ -6,9 +6,11 @@ import SwiftUI
 /// A self-contained annotation editor window. The source image is retained at full pixel
 /// resolution; the canvas only scales its presentation and the renderer exports pixels.
 public final class AnnotationEditorWindow: NSWindowController, NSWindowDelegate {
-    private let editorModel: AnnotationEditorModel
+    let editorModel: AnnotationEditorModel
     private let shortcuts: HotKeyManager
+    private let clipboard = AnnotationClipboard()
     private var keyMonitor: Any?
+    var onSaveAndClose: ((AnnotationEditorWindow) -> Void)?
 
     init(
         image: NSImage,
@@ -27,6 +29,8 @@ public final class AnnotationEditorWindow: NSWindowController, NSWindowDelegate 
         let root = AnnotationEditorRoot(model: model, shortcuts: shortcuts, onSave: onSave, onCopy: onCopy, onPin: onPin)
         let hosting = NSHostingView(rootView: root)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1040, height: 700), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        // Keep the editor out of automatic tiling without changing its focus or window level.
+        window.setAccessibilitySubrole(.floatingWindow)
         window.title = "Annotate — TobyShot"
         window.setContentSize(NSSize(width: 1040, height: 700))
         window.minSize = NSSize(width: 680, height: 460)
@@ -37,6 +41,7 @@ public final class AnnotationEditorWindow: NSWindowController, NSWindowDelegate 
         super.init(window: window)
         window.delegate = self
         model.windowController = self
+        model.onImageChange = { [weak self] image in self?.clipboard.copy(image) }
         if UserDefaults.standard.bool(forKey: "editorAlwaysOnTop") {
             window.level = .floating
         }
@@ -44,8 +49,7 @@ public final class AnnotationEditorWindow: NSWindowController, NSWindowDelegate 
             guard let self, let window = self.window,
                   NSApp.keyWindow === window,
                   (event.window == nil || event.window === window), window.attachedSheet == nil,
-                  NSApp.modalWindow == nil,
-                  !Self.isEditingText(in: window) else { return event }
+                  NSApp.modalWindow == nil else { return event }
             return self.handleKeyEvent(event) ? nil : event
         }
         _ = hosting
@@ -64,7 +68,7 @@ public final class AnnotationEditorWindow: NSWindowController, NSWindowDelegate 
         guard editorModel.hasUnsavedChanges else { return true }
         let alert = NSAlert()
         alert.messageText = "Close this annotation?"
-        alert.informativeText = "Use Done or Save as… to save your changes before closing."
+        alert.informativeText = "Use Save as… to save your changes before closing."
         alert.addButton(withTitle: "Keep editing")
         alert.addButton(withTitle: "Discard changes")
         return alert.runModal() == .alertSecondButtonReturn
@@ -77,21 +81,24 @@ public final class AnnotationEditorWindow: NSWindowController, NSWindowDelegate 
 
     func handleKeyEvent(_ event: NSEvent) -> Bool {
         guard !shortcuts.isRecordingShortcut else { return false }
-        if let action = shortcuts.action(for: event, scope: .editor) {
+        let action = shortcuts.action(for: event, scope: .editor)
+        if let window, Self.isEditingText(in: window), action != .editorSave, action != .editorSaveAs { return false }
+        if let action {
             switch action {
             case .editorCopyObject:
                 guard let image = editorModel.renderedSelection() else { return false }
+                editorModel.flushImageChange()
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.writeObjects([image])
             case .editorDuplicate:
                 guard editorModel.duplicateSelection() else { return false }
             case .editorSave:
-                guard onSave(editorModel.renderedImage(), false) else { return true }
-                editorModel.markSaved()
+                saveAndClose()
             case .editorSaveAs:
                 guard onSave(editorModel.renderedImage(), true) else { return true }
                 editorModel.markSaved()
             case .editorCopyScreenshot:
+                editorModel.flushImageChange()
                 onCopy(editorModel.renderedImage())
             case .editorPrint:
                 let image = editorModel.renderedImage()
@@ -137,17 +144,19 @@ public final class AnnotationEditorWindow: NSWindowController, NSWindowDelegate 
             return true
         }
         if modifiers.isEmpty, event.keyCode == UInt16(kVK_Escape) {
-            editorModel.selectedID = nil
+            editorModel.clearSelection()
             editorModel.tool = .select
             return true
         }
         return false
     }
 
-    private func saveAndClose() {
+    func saveAndClose() {
+        editorModel.finishTextEditing()
         guard onSave(editorModel.renderedImage(), false) else { return }
         editorModel.markSaved()
         close()
+        onSaveAndClose?(self)
     }
 
     private let onSave: (NSImage, Bool) -> Bool
@@ -162,6 +171,12 @@ public final class AnnotationEditorWindow: NSWindowController, NSWindowDelegate 
 enum AnnotationTool: String, CaseIterable, Identifiable {
     case select, crop, arrow, rectangle, filledRectangle, ellipse, line, freehand, text, step, redact, pixelate
     var id: String { rawValue }
+    var supportsDrawingConstraint: Bool {
+        switch self {
+        case .arrow, .rectangle, .filledRectangle, .ellipse, .line: true
+        default: false
+        }
+    }
     var title: String {
         switch self {
         case .select: "Select"; case .crop: "Crop"; case .arrow: "Arrow"; case .rectangle: "Rectangle"
@@ -201,9 +216,17 @@ struct EditorAnnotation: Identifiable, Equatable {
     var shadow = true
     var reversed = false
     var font: AnnotationFont = .system
+    // Shared shape appearance; retain the original arrow fields and preference keys.
     var arrowStyle: AnnotationArrowStyle = .clean
     var arrowStroke: AnnotationArrowStroke = .solid
     var arrowSeed: UInt64 = .random(in: 1...UInt64.max)
+    // Displacement from the endpoints' midpoint; translation preserves the curve.
+    var arrowBend: CGPoint = .zero
+
+    var arrowBendPoint: CGPoint {
+        CGPoint(x: (start.x + end.x) / 2 + arrowBend.x,
+                y: (start.y + end.y) / 2 + arrowBend.y)
+    }
 }
 
 struct EditorState {
@@ -217,38 +240,60 @@ struct EditorState {
 
 @MainActor
 final class AnnotationEditorModel: ObservableObject {
-    @Published var image: NSImage
-    @Published var tool: AnnotationTool = .select {
-        didSet { finishTextEditing() }
+    @Published var image: NSImage {
+        didSet { if image !== oldValue { scheduleImageChange() } }
     }
-    @Published var selectedID: UUID?
+    @Published var tool: AnnotationTool = .select {
+        didSet { finishTextEditing(); drawingAnnotationID = nil; resetSelectionDrag(); flushImageChange() }
+    }
+    @Published var selectedIDs: Set<UUID> = []
+    var selectedID: UUID? {
+        get { selectedIDs.count == 1 ? selectedIDs.first : nil }
+        set { selectedIDs = Set(newValue.map { [$0] } ?? []) }
+    }
+    @Published private(set) var selectionRect: CGRect?
     @Published private(set) var editingTextID: UUID?
     @Published var showBackgroundPanel = false
     @Published var color: NSColor = .systemRed {
-        didSet { updateEditingTextAppearance(color: color) }
+        didSet { updateSelectedAppearance(color: color) }
     }
     @Published var strokeWidth: CGFloat = 5 {
-        didSet { updateEditingTextAppearance(width: strokeWidth) }
+        didSet { updateSelectedAppearance(width: strokeWidth) }
     }
-    @Published private(set) var background: AnnotationBackground = .none
-    @Published private(set) var padding: CGFloat = 36
-    @Published private(set) var cornerRadius: CGFloat = 18
+    @Published private(set) var background: AnnotationBackground = .none {
+        didSet { if background != oldValue { scheduleImageChange() } }
+    }
+    @Published private(set) var padding: CGFloat = 36 {
+        didSet { if padding != oldValue { scheduleImageChange() } }
+    }
+    @Published private(set) var cornerRadius: CGFloat = 18 {
+        didSet { if cornerRadius != oldValue { scheduleImageChange() } }
+    }
     @Published var zoom: CGFloat = 0
-    @Published var annotations: [EditorAnnotation] = []
+    @Published var annotations: [EditorAnnotation] = [] {
+        didSet { if annotations != oldValue { scheduleImageChange() } }
+    }
     @Published var cropRect: CGRect?
     @Published var showColorNames = UserDefaults.standard.bool(forKey: "showColorNames")
     @Published var smoothDrawing = UserDefaults.standard.object(forKey: "smoothDrawing") == nil || UserDefaults.standard.bool(forKey: "smoothDrawing")
     @Published var annotationShadow = UserDefaults.standard.object(forKey: "annotationShadow") == nil || UserDefaults.standard.bool(forKey: "annotationShadow")
     let sourceURL: URL?
     weak var windowController: AnnotationEditorWindow?
+    var onImageChange: ((NSImage) -> Void)?
+    private var imageChangePending = false
+    private var imageChangeScheduled = false
     private var undoStack: [EditorState] = []
     private var redoStack: [EditorState] = []
     private var stepCount = 0
-    private var draggingAnnotation: UUID?
     private var dragOrigin: CGPoint = .zero
-    private var movingOriginal: EditorAnnotation?
+    private var movingOriginals: [UUID: EditorAnnotation] = [:]
+    private var selectionAnchor: CGPoint?
+    private var selectionOriginalIDs: Set<UUID> = []
     private var moveCheckpointed = false
     private var textResize: AnnotationTextResize?
+    private var arrowEdit: AnnotationArrowEdit?
+    private var shapeEdit: AnnotationShapeEdit?
+    private var drawingAnnotationID: UUID?
     private var cropAnchor: CGPoint?
     private var savedState: EditorState?
     private var isEditingBackground = false
@@ -259,6 +304,27 @@ final class AnnotationEditorModel: ObservableObject {
         self.image = image
         self.sourceURL = sourceURL
         savedState = state()
+    }
+
+    private func scheduleImageChange() {
+        guard onImageChange != nil else { return }
+        imageChangePending = true
+        guard !imageChangeScheduled else { return }
+        imageChangeScheduled = true
+        // Render after compound changes such as crop and undo have updated every field.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.imageChangeScheduled = false
+            self.flushImageChange()
+        }
+    }
+
+    func flushImageChange() {
+        // Export completed gestures instead of encoding an image at every mouse movement.
+        guard imageChangePending, drawingAnnotationID == nil, movingOriginals.isEmpty,
+              textResize == nil, arrowEdit == nil, shapeEdit == nil, !isEditingBackground else { return }
+        imageChangePending = false
+        onImageChange?(renderedImage())
     }
 
     var pixelSize: NSSize {
@@ -286,8 +352,10 @@ final class AnnotationEditorModel: ObservableObject {
     }
 
     func setBackgroundEditing(_ isEditing: Bool) {
+        let wasEditing = isEditingBackground
         isEditingBackground = isEditing
         backgroundEditCheckpointed = false
+        if wasEditing, !isEditing { flushImageChange() }
     }
 
     func updateBackground(style: AnnotationBackground) {
@@ -318,30 +386,65 @@ final class AnnotationEditorModel: ObservableObject {
         guard let next = redoStack.popLast() else { return }
         undoStack.append(state()); restore(next)
     }
-    private func restore(_ state: EditorState) { image = state.image; annotations = state.annotations; cropRect = state.crop; background = state.background; padding = state.padding; cornerRadius = state.cornerRadius; stepCount = annotations.filter { $0.kind == .step }.map(\.step).max() ?? 0; selectedID = nil }
+    private func restore(_ state: EditorState) { image = state.image; annotations = state.annotations; cropRect = state.crop; background = state.background; padding = state.padding; cornerRadius = state.cornerRadius; stepCount = annotations.filter { $0.kind == .step }.map(\.step).max() ?? 0; clearSelection() }
+    func clearSelection() {
+        selectedIDs.removeAll()
+        resetSelectionDrag()
+        flushImageChange()
+    }
+
+    private func resetSelectionDrag() {
+        selectionRect = nil
+        selectionAnchor = nil
+        selectionOriginalIDs.removeAll()
+        movingOriginals.removeAll()
+        textResize = nil
+        arrowEdit = nil
+        shapeEdit = nil
+    }
+
     func deleteSelection() {
-        guard let id = selectedID, annotations.contains(where: { $0.id == id }) else { selectedID = nil; return }
-        checkpoint(); annotations.removeAll { $0.id == id }
+        let ids = selectedIDs
+        guard annotations.contains(where: { ids.contains($0.id) }) else { clearSelection(); return }
+        checkpoint(); annotations.removeAll { ids.contains($0.id) }
+        resetSelectionDrag()
     }
 
     @discardableResult
     func duplicateSelection() -> Bool {
-        guard let id = selectedID, let selected = annotations.first(where: { $0.id == id }) else { return false }
+        let selected = annotations.filter { selectedIDs.contains($0.id) }
+        guard !selected.isEmpty else { return false }
         checkpoint()
-        var copy = translated(selected, by: CGPoint(x: 12, y: 12))
-        copy.id = UUID()
-        annotations.append(copy)
-        selectedID = copy.id
+        let copies = selected.map { annotation in
+            var copy = translated(annotation, by: CGPoint(x: 12, y: 12))
+            copy.id = UUID()
+            return copy
+        }
+        annotations.append(contentsOf: copies)
+        selectedIDs = Set(copies.map(\.id))
+        resetSelectionDrag()
         return true
     }
 
     func adjustToolSize(by delta: CGFloat) {
-        strokeWidth = min(40, max(1, strokeWidth + delta))
+        strokeWidth = min(40, max(1, currentStrokeWidth + delta))
+    }
+
+    var currentColor: NSColor {
+        appearanceSelection.first(where: { $0.kind != .redaction && $0.kind != .pixelation })?.color ?? color
+    }
+
+    var currentStrokeWidth: CGFloat {
+        appearanceSelection.first(where: { $0.kind != .redaction })?.width ?? strokeWidth
+    }
+
+    private var appearanceSelection: [EditorAnnotation] {
+        guard tool == .select || editingTextID != nil else { return [] }
+        return annotations.filter { selectedIDs.contains($0.id) }
     }
 
     func renderedSelection() -> NSImage? {
-        guard let id = selectedID, let annotation = annotations.first(where: { $0.id == id }) else { return nil }
-        return AnnotationRenderer.render(annotation: annotation, sourceImage: image)
+        AnnotationRenderer.render(annotations: annotations.filter { selectedIDs.contains($0.id) }, sourceImage: image)
     }
 
     @discardableResult
@@ -375,12 +478,33 @@ final class AnnotationEditorModel: ObservableObject {
             undoStack.append(original)
             redoStack.removeAll()
         }
+        if tool == .text { tool = .select }
+        flushImageChange()
     }
 
-    private func updateEditingTextAppearance(color: NSColor? = nil, width: CGFloat? = nil) {
-        guard let id = editingTextID, let index = annotations.firstIndex(where: { $0.id == id }) else { return }
-        if let color { annotations[index].color = color }
-        if let width { annotations[index].width = width; annotations[index].textSize = nil }
+    private func updateSelectedAppearance(color: NSColor? = nil, width: CGFloat? = nil) {
+        if let id = editingTextID, let index = annotations.firstIndex(where: { $0.id == id }) {
+            if let color { annotations[index].color = color }
+            if let width { annotations[index].width = width; annotations[index].textSize = nil }
+            return
+        }
+        guard tool == .select else { return }
+        let ids = selectedIDs
+        let updated = annotations.map { annotation in
+            guard ids.contains(annotation.id), annotation.kind != .redaction else { return annotation }
+            var edited = annotation
+            if let color, annotation.kind != .pixelation { edited.color = color }
+            if let width {
+                edited.width = width
+                if annotation.kind == .text { edited.textSize = nil }
+            }
+            return edited
+        }
+        guard updated != annotations else { return }
+        checkpoint()
+        annotations = updated
+        selectedIDs = ids
+        resetSelectionDrag()
     }
 
     func textSelectionBounds(_ annotation: EditorAnnotation) -> CGRect {
@@ -402,13 +526,57 @@ final class AnnotationEditorModel: ObservableObject {
         annotations.last(where: { hitTest($0, point: point) })
     }
 
-    func begin(at point: CGPoint) {
+    @discardableResult
+    func beginArrowEdit(handle: AnnotationArrowHandle, at point: CGPoint) -> Bool {
+        guard tool == .select || tool == .arrow,
+              let annotation = annotations.first(where: { $0.id == selectedID }),
+              annotation.kind == .arrow else { return false }
         finishTextEditing()
+        arrowEdit = AnnotationArrowEdit(original: annotation, handle: handle, start: point)
+        moveCheckpointed = false
+        return true
+    }
+
+    func straightenSelectedArrow() {
+        guard let id = selectedID, let index = annotations.firstIndex(where: { $0.id == id }),
+              annotations[index].kind == .arrow, annotations[index].arrowBend != .zero else { return }
+        checkpoint()
+        annotations[index].arrowBend = .zero
+        selectedID = id
+    }
+
+    @discardableResult
+    func beginShapeEdit(handle: AnnotationShapeHandle, at point: CGPoint) -> Bool {
+        guard tool == .select,
+              let annotation = annotations.first(where: { $0.id == selectedID }),
+              AnnotationShapeHandle.handles(for: annotation).contains(handle) else { return false }
+        finishTextEditing()
+        resetSelectionDrag()
+        shapeEdit = AnnotationShapeEdit(original: annotation, handle: handle, start: point)
+        moveCheckpointed = false
+        return true
+    }
+
+    func begin(at point: CGPoint, extendingSelection: Bool = false) {
+        finishTextEditing()
+        resetSelectionDrag()
         if tool == .select {
-            if let hit = annotations.last(where: { hitTest($0, point: point) }) {
-                moveCheckpointed = false
-                selectedID = hit.id; draggingAnnotation = hit.id; dragOrigin = point; movingOriginal = hit
-            } else { selectedID = nil }
+            moveCheckpointed = false
+            if let hit = annotation(at: point) {
+                if extendingSelection {
+                    if selectedIDs.remove(hit.id) != nil { return }
+                    selectedIDs.insert(hit.id)
+                } else if !selectedIDs.contains(hit.id) {
+                    selectedID = hit.id
+                }
+                dragOrigin = point
+                movingOriginals = Dictionary(uniqueKeysWithValues: annotations.filter { selectedIDs.contains($0.id) }.map { ($0.id, $0) })
+            } else {
+                if !extendingSelection { selectedIDs.removeAll() }
+                selectionOriginalIDs = selectedIDs
+                selectionAnchor = point
+                selectionRect = CGRect(origin: point, size: .zero)
+            }
             return
         }
         if tool == .text {
@@ -424,7 +592,14 @@ final class AnnotationEditorModel: ObservableObject {
             }
             return
         }
-        if tool == .step { checkpoint(); stepCount += 1; annotations.append(make(.step, at: point, end: point, step: stepCount)); return }
+        if tool == .step {
+            checkpoint(); stepCount += 1
+            let annotation = make(.step, at: point, end: point, step: stepCount)
+            annotations.append(annotation)
+            selectedID = annotation.id
+            drawingAnnotationID = annotation.id
+            return
+        }
         if tool == .crop { cropAnchor = point; cropRect = CGRect(origin: point, size: .zero); return }
         checkpoint()
         let kind: EditorAnnotation.Kind
@@ -438,10 +613,25 @@ final class AnnotationEditorModel: ObservableObject {
         if kind == .pixelation { a.color = .black }
         if kind == .freehand { a.points = [point] }
         annotations.append(a); selectedID = a.id
+        drawingAnnotationID = a.id
     }
 
-    func continueDrag(to point: CGPoint) {
+    func continueDrag(to point: CGPoint, constrained: Bool = false) {
         guard editingTextID == nil else { return }
+        if let edit = shapeEdit, let index = annotations.firstIndex(where: { $0.id == edit.original.id }) {
+            let edited = edit.annotation(at: point)
+            guard edited != annotations[index] else { return }
+            if !moveCheckpointed { checkpoint(); selectedID = edit.original.id; moveCheckpointed = true }
+            annotations[index] = edited
+            return
+        }
+        if let edit = arrowEdit, let index = annotations.firstIndex(where: { $0.id == edit.original.id }) {
+            let edited = edit.annotation(at: point)
+            guard edited != annotations[index] else { return }
+            if !moveCheckpointed { checkpoint(); selectedID = edit.original.id; moveCheckpointed = true }
+            annotations[index] = edited
+            return
+        }
         if let resize = textResize, let index = annotations.firstIndex(where: { $0.id == resize.original.id }) {
             let resized = resize.annotation(at: point)
             guard resized != annotations[index] else { return }
@@ -449,16 +639,35 @@ final class AnnotationEditorModel: ObservableObject {
             annotations[index] = resized
             return
         }
-        if tool == .select, let id = draggingAnnotation, let original = movingOriginal,
-           let index = annotations.firstIndex(where: { $0.id == id }) {
+        if tool == .select {
+            if let anchor = selectionAnchor {
+                let selection = rect(from: anchor, to: point)
+                selectionRect = selection
+                selectedIDs = selectionOriginalIDs.union(annotations.filter { annotation in
+                    let bounds = annotation.kind == .text ? textSelectionBounds(annotation) : annotationBounds(annotation)
+                    return !selection.isEmpty && selection.intersects(bounds)
+                }.map(\.id))
+                return
+            }
+            guard !movingOriginals.isEmpty else { return }
             let delta = CGPoint(x: point.x - dragOrigin.x, y: point.y - dragOrigin.y)
             guard delta != .zero || moveCheckpointed else { return }
-            if !moveCheckpointed { checkpoint(); selectedID = id; moveCheckpointed = true }
-            annotations[index] = translated(original, by: delta); return
+            if !moveCheckpointed { checkpoint(); selectedIDs = Set(movingOriginals.keys); moveCheckpointed = true }
+            for index in annotations.indices {
+                if let original = movingOriginals[annotations[index].id] {
+                    annotations[index] = translated(original, by: delta)
+                }
+            }
+            return
         }
-        if tool == .crop { cropRect = rect(from: cropAnchor ?? point, to: point); return }
-        guard let id = selectedID, let index = annotations.firstIndex(where: { $0.id == id }) else { return }
-        annotations[index].end = point
+        if tool == .crop {
+            if let cropAnchor { cropRect = rect(from: cropAnchor, to: point) }
+            return
+        }
+        guard let id = drawingAnnotationID, let index = annotations.firstIndex(where: { $0.id == id }) else { return }
+        annotations[index].end = constrained
+            ? AnnotationGeometry.constrainedEndpoint(from: annotations[index].start, to: point, kind: annotations[index].kind)
+            : point
         if annotations[index].kind == .freehand {
             if smoothDrawing, let last = annotations[index].points.last {
                 annotations[index].points.append(CGPoint(x: (last.x + point.x) / 2, y: (last.y + point.y) / 2))
@@ -468,14 +677,22 @@ final class AnnotationEditorModel: ObservableObject {
 
     func endDrag() {
         textResize = nil
-        if tool == .freehand, let id = selectedID, let index = annotations.firstIndex(where: { $0.id == id }), annotations[index].points.last != annotations[index].end {
+        arrowEdit = nil
+        if tool == .freehand, let id = drawingAnnotationID, let index = annotations.firstIndex(where: { $0.id == id }), annotations[index].points.last != annotations[index].end {
             annotations[index].points.append(annotations[index].end)
         }
-        draggingAnnotation = nil; movingOriginal = nil
-        if tool == .crop {
+        resetSelectionDrag()
+        if tool == .crop, cropAnchor != nil {
             if let cropRect, cropRect.width > 2, cropRect.height > 2 { applyCrop(cropRect) }
             cropAnchor = nil; cropRect = nil
+            tool = .select
         }
+        if let id = drawingAnnotationID, annotations.contains(where: { $0.id == id }) {
+            selectedID = id
+            tool = .select
+        }
+        drawingAnnotationID = nil
+        flushImageChange()
     }
     private func applyCrop(_ rect: CGRect) {
         guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { cropRect = nil; return }
@@ -516,8 +733,12 @@ final class AnnotationEditorModel: ObservableObject {
         b.points = b.points.map { CGPoint(x: $0.x + delta.x, y: $0.y + delta.y) }; return b
     }
 
+    var canvasBounds: CGRect {
+        AnnotationRenderer.canvasBounds(imageSize: pixelSize, annotations: annotations, background: background, padding: padding)
+    }
+
     func renderedImage(excluding annotationID: UUID? = nil) -> NSImage {
-        AnnotationRenderer.render(image: image, annotations: annotations.filter { $0.id != annotationID }, background: background, padding: padding, cornerRadius: cornerRadius)
+        AnnotationRenderer.render(image: image, annotations: annotations.filter { $0.id != annotationID }, background: background, padding: padding, cornerRadius: cornerRadius, canvasBounds: canvasBounds)
     }
 }
 
@@ -565,7 +786,7 @@ private struct AnnotationEditorRoot: View {
     }
 
     private var drawingTools: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 0) {
             toolButton(.select, action: .moveTool); toolButton(.crop, action: .cropTool)
             Divider().frame(height: 20).padding(.horizontal, 2)
             toolButton(.arrow, action: .arrowTool); toolButton(.rectangle, action: .rectangleTool); toolButton(.filledRectangle, action: .filledRectangleTool)
@@ -578,19 +799,19 @@ private struct AnnotationEditorRoot: View {
         HStack(spacing: 8) {
             Menu {
                 ForEach(palette, id: \.0) { name, value in
-                    Button { model.color = value } label: { Label(name, systemImage: model.color == value ? "checkmark.circle.fill" : "circle.fill") }
+                    Button { model.color = value } label: { Label(name, systemImage: model.currentColor == value ? "checkmark.circle.fill" : "circle.fill") }
                 }
             } label: {
                 HStack(spacing: 5) {
-                    Image(systemName: "circle.fill").foregroundStyle(Color(nsColor: model.color)).font(.system(size: 16))
-                    if model.showColorNames, let name = palette.first(where: { $0.1 == model.color })?.0 { Text(name) }
+                    Image(systemName: "circle.fill").foregroundStyle(Color(nsColor: model.currentColor)).font(.system(size: 16))
+                    if model.showColorNames, let name = palette.first(where: { $0.1 == model.currentColor })?.0 { Text(name) }
                 }.padding(5)
             }.menuStyle(.borderlessButton).fixedSize().help("Annotation color")
-            Picker("Stroke width", selection: $model.strokeWidth) {
-                ForEach(Array(Set([CGFloat(2), 5, 10, 20, model.strokeWidth])).sorted(), id: \.self) { width in
+            Picker("Stroke width", selection: Binding(get: { model.currentStrokeWidth }, set: { model.strokeWidth = $0 })) {
+                ForEach(Array(Set([CGFloat(2), 5, 10, 20, model.currentStrokeWidth])).sorted(), id: \.self) { width in
                     Text("\(Int(width)) pt").tag(width)
                 }
-            }.labelsHidden().pickerStyle(.menu).frame(width: 74).help("Stroke width; also controls text size")
+            }.labelsHidden().pickerStyle(.menu).frame(width: 74).help("Selection or new annotation size; controls stroke width, text, numbered steps, and pixelation")
             Menu {
                 ForEach(AnnotationBackground.allCases) { background in Button(background.title) { model.updateBackground(style: background); model.showBackgroundPanel = true } }
             } label: { Label("Background", systemImage: "square.on.square") }
@@ -607,16 +828,16 @@ private struct AnnotationEditorRoot: View {
     }
 
     private var exportActions: some View {
-        HStack(spacing: 7) {
-            Button("Save as…") { if onSave(model.renderedImage(), true) { model.markSaved() } }
-                .buttonStyle(.bordered).fixedSize().help("Save as… (\(shortcuts.label(for: .editorSaveAs)))")
-            Button("Done") { if onSave(model.renderedImage(), false) { model.markSaved(); model.windowController?.close() } }
-                .buttonStyle(.borderedProminent).fixedSize().help("Save and close (⌘↩)")
-        }.fixedSize()
+        Button("Save as…") { if onSave(model.renderedImage(), true) { model.markSaved() } }
+            .buttonStyle(.bordered).fixedSize().help("Save as… (\(shortcuts.label(for: .editorSaveAs)))")
     }
 
     private func toolButton(_ tool: AnnotationTool, action: ShortcutAction) -> some View {
-        Button { model.tool = tool } label: { Image(systemName: tool.symbol).frame(width: 25, height: 24).background(model.tool == tool ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 6)) }
+        Button { model.tool = tool } label: {
+            Image(systemName: tool.symbol).frame(width: 30, height: 28)
+                .background(model.tool == tool ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
+        }
             .help("\(tool.title) (\(shortcuts.label(for: action)))").accessibilityLabel(tool.title).accessibilityValue(model.tool == tool ? "Selected" : "")
     }
     private var canvas: some View {
@@ -645,9 +866,9 @@ private struct AnnotationEditorRoot: View {
     private var footer: some View {
         HStack(spacing: 10) {
             Menu { Button("Fit") { model.zoom = 0 }; ForEach([CGFloat(0.5), 1, 2], id: \.self) { scale in Button("\(Int(scale * 100))%") { model.zoom = scale } } } label: { Text(model.zoom == 0 ? "Fit" : "\(Int(model.zoom * 100))%").font(.system(.caption, design: .rounded).weight(.semibold)).frame(width: 58) }.fixedSize().help("Zoom level")
-            Text("\(Int(model.pixelSize.width)) × \(Int(model.pixelSize.height)) px").font(.caption).foregroundStyle(.secondary)
+            Text("\(Int(model.canvasBounds.width)) × \(Int(model.canvasBounds.height)) px").font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Button { onCopy(model.renderedImage()) } label: { Label("Copy", systemImage: "doc.on.doc") }.help("Copy rendered image (\(shortcuts.label(for: .editorCopyScreenshot)))")
+            Button { model.flushImageChange(); onCopy(model.renderedImage()) } label: { Label("Copy", systemImage: "doc.on.doc") }.help("Copy rendered image (\(shortcuts.label(for: .editorCopyScreenshot)))")
             Button { onPin(model.renderedImage()) } label: { Label("Pin", systemImage: "pin") }.help("Pin rendered image (\(shortcuts.label(for: .editorPin)))")
         }.padding(.horizontal, 14).padding(.vertical, 9).background(Color(nsColor: .controlBackgroundColor))
     }
@@ -655,17 +876,37 @@ private struct AnnotationEditorRoot: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Annotation shortcuts").font(.title2.bold())
             Text("Move \(shortcuts.label(for: .moveTool))   Crop \(shortcuts.label(for: .cropTool))   Draw \(shortcuts.label(for: .drawTool))   Line \(shortcuts.label(for: .lineTool))\nText \(shortcuts.label(for: .textTool))   Arrow \(shortcuts.label(for: .arrowTool))   Counter \(shortcuts.label(for: .counterTool))   Ellipse \(shortcuts.label(for: .ellipseTool))\nRedact \(shortcuts.label(for: .redactionTool))   Rectangle \(shortcuts.label(for: .rectangleTool))   Filled rectangle \(shortcuts.label(for: .filledRectangleTool))   Pixelate \(shortcuts.label(for: .pixelateTool))\nBackground \(shortcuts.label(for: .backgroundTool))   Smaller/larger \(shortcuts.label(for: .decreaseToolSize))/\(shortcuts.label(for: .increaseToolSize))\nCopy object \(shortcuts.label(for: .editorCopyObject))   Duplicate \(shortcuts.label(for: .editorDuplicate))   Save \(shortcuts.label(for: .editorSave))   Save as \(shortcuts.label(for: .editorSaveAs))\nCopy image \(shortcuts.label(for: .editorCopyScreenshot))   Print \(shortcuts.label(for: .editorPrint))   Pin \(shortcuts.label(for: .editorPin))\nUndo ⌘Z   Redo ⇧⌘Z   Delete Remove   Escape Select")
-            Text("Drag on the canvas to draw. Select and drag an annotation to move it. Click with Text to type on the image; double-click existing text to edit it. Drag a text corner to resize. Return finishes editing, Shift-Return adds a line. Crop applies when you finish the crop selection.").foregroundStyle(.secondary)
+            Text("Tools return to the pointer after drawing, placing a numbered step, applying a crop, or finishing text entry. New annotations stay selected. Hold Shift while drawing to snap lines and arrows to 45° increments, make rectangles square, or make ellipses circular. With the pointer, drag empty canvas space to select multiple annotations, then drag any selected annotation to move the group. Hold Shift to add to the selection. Drag an arrow endpoint to adjust it, or the middle handle to bend it; double-click the middle handle to straighten it. Drag the arrow itself to move it. Click with Text to type on the image; double-click existing text to edit it. Drag shape corners to resize rectangles, ellipses, freehand drawings, numbered steps, redactions, and pixelation regions; drag line endpoints to adjust them. Color and size controls update selected annotations. Drag a text corner to resize. Return finishes editing, Shift-Return adds a line. Crop applies when you finish the crop selection.").foregroundStyle(.secondary)
             HStack { Spacer(); Button("Close") { showHelp = false }.keyboardShortcut(.defaultAction) }
         }.padding(24).frame(width: 420)
     }
 }
 
 enum AnnotationRenderer {
+    static func canvasBounds(imageSize: CGSize, annotations: [EditorAnnotation], background: AnnotationBackground = .none, padding: CGFloat = 0) -> CGRect {
+        var bounds = CGRect(origin: .zero, size: imageSize)
+        for annotation in annotations {
+            // Pixelation only paints existing source pixels. Empty text paints nothing.
+            guard annotation.kind != .pixelation,
+                  annotation.kind != .text || !annotation.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let geometry = AnnotationGeometry(annotation, imageSize: imageSize)
+            guard !geometry.renderedBounds.isNull, !geometry.renderedBounds.isEmpty else { continue }
+            bounds = bounds.union(geometry.exportBounds)
+        }
+        let pad = background == .none ? 0 : max(0, padding.rounded())
+        return bounds.insetBy(dx: -pad, dy: -pad)
+    }
+
     static func render(annotation: EditorAnnotation, sourceImage: NSImage) -> NSImage? {
+        render(annotations: [annotation], sourceImage: sourceImage)
+    }
+
+    static func render(annotations: [EditorAnnotation], sourceImage: NSImage) -> NSImage? {
+        guard !annotations.isEmpty else { return nil }
         guard let source = sourceImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
-        let geometry = AnnotationGeometry(annotation, imageSize: CGSize(width: source.width, height: source.height))
-        let bounds = geometry.exportBounds
+        let pixelSize = CGSize(width: source.width, height: source.height)
+        let geometries = annotations.map { AnnotationGeometry($0, imageSize: pixelSize) }
+        let bounds = geometries.reduce(CGRect.null) { $0.union($1.exportBounds) }
         guard !bounds.isNull, !bounds.isEmpty else { return nil }
         let width = max(1, Int(ceil(bounds.width)))
         let height = max(1, Int(ceil(bounds.height)))
@@ -674,7 +915,7 @@ enum AnnotationRenderer {
         context.translateBy(x: 0, y: CGFloat(height))
         context.scaleBy(x: 1, y: -1)
         context.translateBy(x: -bounds.minX, y: -bounds.minY)
-        var sourcePixels = [UInt8](repeating: 0, count: annotation.kind == .pixelation ? source.width * source.height * 4 : 0)
+        var sourcePixels = [UInt8](repeating: 0, count: annotations.contains(where: { $0.kind == .pixelation }) ? source.width * source.height * 4 : 0)
         if !sourcePixels.isEmpty {
             sourcePixels.withUnsafeMutableBytes { raw in
                 if let bitmap = CGContext(data: raw.baseAddress, width: source.width, height: source.height, bitsPerComponent: 8,
@@ -684,23 +925,25 @@ enum AnnotationRenderer {
                 }
             }
         }
-        draw(annotation, geometry: geometry, in: context, pixelSize: CGSize(width: source.width, height: source.height), sourcePixels: sourcePixels)
+        for (annotation, geometry) in zip(annotations, geometries) {
+            draw(annotation, geometry: geometry, in: context, pixelSize: pixelSize, sourcePixels: sourcePixels)
+        }
         guard let rendered = context.makeImage() else { return nil }
         return NSImage(cgImage: rendered, size: NSSize(width: width, height: height))
     }
 
-    static func render(image: NSImage, annotations: [EditorAnnotation], background: AnnotationBackground = .none, padding: CGFloat = 0, cornerRadius: CGFloat = 0) -> NSImage {
+    static func render(image: NSImage, annotations: [EditorAnnotation], background: AnnotationBackground = .none, padding: CGFloat = 0, cornerRadius: CGFloat = 0, canvasBounds suppliedBounds: CGRect? = nil) -> NSImage {
         guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return image }
-        let pad = background == .none ? 0 : Int(max(0, padding.rounded()))
-        let width = cg.width + pad * 2, height = cg.height + pad * 2
+        let bounds = suppliedBounds ?? canvasBounds(imageSize: CGSize(width: cg.width, height: cg.height), annotations: annotations, background: background, padding: padding)
+        let width = Int(bounds.width), height = Int(bounds.height)
         guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return image }
         drawBackground(background, in: context, size: CGSize(width: width, height: height))
+        let imageRect = CGRect(x: -bounds.minX, y: bounds.maxY - CGFloat(cg.height), width: CGFloat(cg.width), height: CGFloat(cg.height))
         if cornerRadius > 0, background != .none {
-            let bounds = CGRect(x: pad, y: pad, width: cg.width, height: cg.height)
-            context.saveGState(); context.addPath(CGPath(roundedRect: bounds, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)); context.clip(); context.draw(cg, in: bounds); context.restoreGState()
-        } else { context.draw(cg, in: CGRect(x: pad, y: pad, width: cg.width, height: cg.height)) }
+            context.saveGState(); context.addPath(CGPath(roundedRect: imageRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)); context.clip(); context.draw(cg, in: imageRect); context.restoreGState()
+        } else { context.draw(cg, in: imageRect) }
         // Use a top-left image coordinate system for all annotation geometry.
-        context.saveGState(); context.translateBy(x: CGFloat(pad), y: CGFloat(height - pad)); context.scaleBy(x: 1, y: -1)
+        context.saveGState(); context.translateBy(x: -bounds.minX, y: bounds.maxY); context.scaleBy(x: 1, y: -1)
         var sourcePixels = [UInt8](repeating: 0, count: annotations.contains(where: { $0.kind == .pixelation }) ? cg.width * cg.height * 4 : 0)
         if !sourcePixels.isEmpty {
         sourcePixels.withUnsafeMutableBytes { raw in
@@ -724,12 +967,8 @@ enum AnnotationRenderer {
             pixelate(a, rect: geometry.pixelationRect, in: c, imageSize: pixelSize, sourcePixels: sourcePixels)
         } else {
             if a.kind == .redaction { c.setFillColor(NSColor.black.cgColor) }
-            if a.kind == .rectangle {
-                c.stroke(geometry.path.boundingBoxOfPath)
-            } else {
-                c.addPath(geometry.path)
-                if geometry.stroked { c.strokePath() } else { c.fillPath() }
-            }
+            c.addPath(geometry.path)
+            if geometry.stroked { c.strokePath() } else { c.fillPath() }
             if let text = geometry.text {
                 if a.kind == .step { c.setShadow(offset: .zero, blur: 0, color: nil) }
                 drawText(text, in: c)

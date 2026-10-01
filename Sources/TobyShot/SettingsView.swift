@@ -62,6 +62,7 @@ struct SettingsView: View {
     @AppStorage("retinaSuffix") private var retinaSuffix = false
     @AppStorage("clipboardMode") private var clipboardMode = "File & Image"
     @AppStorage("historyDays") private var historyDays = 7
+    @AppStorage("screenshotRetentionDays") private var screenshotRetentionDays = 0
     @AppStorage("ocrLineBreaks") private var ocrLineBreaks = true
     @AppStorage("ocrLanguage") private var ocrLanguage = "Automatic"
     @AppStorage("pinnedRounded") private var pinnedRounded = true
@@ -100,12 +101,8 @@ struct SettingsView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 11) {
-                Image(systemName: "viewfinder.circle.fill")
-                    .font(.system(size: 30, weight: .medium))
-                    .symbolRenderingMode(.palette)
-                    .foregroundStyle(.white, accent)
-                    .frame(width: 40, height: 40)
-                    .background(accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 11))
+                Image(nsImage: NSApplication.shared.applicationIconImage).resizable().scaledToFit()
+                    .frame(width: 40, height: 40).accessibilityLabel("TobyShot")
                 VStack(alignment: .leading, spacing: 3) {
                     Text("TobyShot").font(.system(size: 15, weight: .semibold))
                     Text("Local first").font(.system(size: 11)).foregroundStyle(.secondary)
@@ -195,7 +192,7 @@ struct SettingsView: View {
             }
             group("Sounds") {
                 ToggleRow("Play sounds", isOn: $playSounds)
-                PickerRow("Shutter sound", selection: $shutterSound, options: ["Tink", "Pop", "Glass", "None"])
+                PickerRow("Shutter sound", selection: $shutterSound, options: ["Native capture", "Tink", "Pop", "Glass", "None"])
             }
             group("Export") {
                 HStack(spacing: 10) {
@@ -322,6 +319,12 @@ struct SettingsView: View {
                 SliderRow("Padding", value: $windowPadding, range: 0...100, valueText: "\(Int(windowPadding)) px")
                 ToggleRow("Capture window shadow", isOn: $windowShadow)
             }
+            group("Automatic deletion") {
+                PickerRow("Delete screenshots after", selection: $screenshotRetentionDays, options: [0, 10, 30, 90, 120], titleForValue: { $0 == 0 ? "Off" : "\($0) days" })
+                Text("Automatically deletes screenshots from your library and their saved export files when they reach this age. Off keeps screenshots until you delete them yourself.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true).padding(.vertical, 8)
+            }
         }
     }
 
@@ -352,9 +355,9 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 20) {
             group("Appearance") {
                 PickerRow("Text font", selection: $annotationFont, options: AnnotationFont.allCases, titleForValue: { $0.title })
-                PickerRow("Arrow style", selection: $annotationArrowStyle, options: AnnotationArrowStyle.allCases, titleForValue: { $0.title })
-                PickerRow("Arrow stroke", selection: $annotationArrowStroke, options: AnnotationArrowStroke.allCases, titleForValue: { $0.title })
-                Text("Choose Excalifont or Virgil with hand-drawn arrows for an Excalidraw feel. Changes apply to new annotations.")
+                PickerRow("Shape style", selection: $annotationArrowStyle, options: AnnotationArrowStyle.allCases, titleForValue: { $0.title })
+                PickerRow("Shape stroke", selection: $annotationArrowStroke, options: AnnotationArrowStroke.allCases, titleForValue: { $0.title })
+                Text("Choose Excalifont or Virgil with hand-drawn arrows, rectangles, ellipses, lines, and numbered circles. Stroke patterns apply to outlines. Changes apply to new annotations.")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
                 annotationPreview
@@ -374,17 +377,35 @@ struct SettingsView: View {
     }
 
     private var annotationPreview: some View {
-        // Render at Retina resolution so the resized settings preview stays sharp.
-        let size = CGSize(width: 1000, height: 280)
-        let source = NSImage(size: size, flipped: false) { rect in
-            NSColor.white.setFill()
-            rect.fill()
-            return true
+        // Keep the bitmap and annotation coordinates in the same pixel space on every display.
+        let size = CGSize(width: 1000, height: 440)
+        let source = NSImage(size: size)
+        if let context = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8,
+                                   bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+            context.setFillColor(NSColor.white.cgColor)
+            context.fill(CGRect(origin: .zero, size: size))
+            if let image = context.makeImage() { source.addRepresentation(NSBitmapImageRep(cgImage: image)) }
         }
         let annotations = [
             EditorAnnotation(kind: .text, start: CGPoint(x: 48, y: 40), end: .zero,
                              color: .black, width: 12, text: "Make it your own", shadow: annotationShadow, font: annotationFont),
-            EditorAnnotation(kind: .arrow, start: CGPoint(x: 56, y: 214), end: CGPoint(x: 932, y: 182),
+            EditorAnnotation(kind: .rectangle, start: CGPoint(x: 56, y: 148), end: CGPoint(x: 266, y: 284),
+                             color: .systemBlue, width: 5, shadow: annotationShadow,
+                             arrowStyle: annotationArrowStyle, arrowStroke: annotationArrowStroke, arrowSeed: 42),
+            EditorAnnotation(kind: .ellipse, start: CGPoint(x: 322, y: 148), end: CGPoint(x: 546, y: 284),
+                             color: .systemPurple, width: 5, shadow: annotationShadow,
+                             arrowStyle: annotationArrowStyle, arrowStroke: annotationArrowStroke, arrowSeed: 42),
+            EditorAnnotation(kind: .filledRectangle, start: CGPoint(x: 610, y: 154), end: CGPoint(x: 782, y: 278),
+                             color: .systemTeal, width: 5, shadow: annotationShadow,
+                             arrowStyle: annotationArrowStyle, arrowStroke: annotationArrowStroke, arrowSeed: 42),
+            EditorAnnotation(kind: .step, start: CGPoint(x: 896, y: 216), end: .zero,
+                             color: .systemOrange, width: 12, shadow: annotationShadow,
+                             arrowStyle: annotationArrowStyle, arrowStroke: annotationArrowStroke, arrowSeed: 42),
+            EditorAnnotation(kind: .line, start: CGPoint(x: 56, y: 366), end: CGPoint(x: 296, y: 350),
+                             color: .systemBlue, width: 5, shadow: annotationShadow,
+                             arrowStyle: annotationArrowStyle, arrowStroke: annotationArrowStroke, arrowSeed: 42),
+            EditorAnnotation(kind: .arrow, start: CGPoint(x: 388, y: 366), end: CGPoint(x: 932, y: 350),
                              color: NSColor(calibratedRed: 0.2, green: 0.4, blue: 0.85, alpha: 1), width: 6,
                              shadow: annotationShadow, reversed: inverseArrow,
                              arrowStyle: annotationArrowStyle, arrowStroke: annotationArrowStroke, arrowSeed: 42)
@@ -393,7 +414,7 @@ struct SettingsView: View {
             .resizable().aspectRatio(contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .padding(.bottom, 9)
-            .accessibilityLabel("Preview: \(annotationFont.title) text and \(annotationArrowStyle.title.lowercased()) \(annotationArrowStroke.title.lowercased()) arrow")
+            .accessibilityLabel("Preview: \(annotationFont.title) text and \(annotationArrowStyle.title.lowercased()) shapes with \(annotationArrowStroke.title.lowercased()) outlines")
     }
 
     private var cloudPage: some View {
@@ -428,8 +449,8 @@ struct SettingsView: View {
             group("Clipboard") {
                 PickerRow("Copy format", selection: $clipboardMode, options: ["File & Image", "Image", "File"])
             }
-            group("Capture history") {
-                PickerRow("Keep history", selection: $historyDays, options: [1, 3, 7, 30, 0], titleForValue: { $0 == 0 ? "Forever" : "\($0) days" })
+            group("Recording history") {
+                PickerRow("Keep recording history", selection: $historyDays, options: [1, 3, 7, 30, 0], titleForValue: { $0 == 0 ? "Forever" : "\($0) days" })
             }
             group("Text recognition") {
                 PickerRow("Language", selection: $ocrLanguage, options: ["Automatic", "English", "Danish"])
@@ -447,8 +468,8 @@ struct SettingsView: View {
     private var aboutPage: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack(spacing: 14) {
-                Image(systemName: "viewfinder.circle.fill")
-                    .font(.system(size: 42)).symbolRenderingMode(.palette).foregroundStyle(.white, accent)
+                Image(nsImage: NSApplication.shared.applicationIconImage).resizable().scaledToFit()
+                    .frame(width: 52, height: 52).accessibilityLabel("TobyShot")
                 VStack(alignment: .leading, spacing: 4) {
                     Text("TobyShot").font(.system(size: 18, weight: .bold))
                     Text("A local-first capture tool for macOS").font(.system(size: 12)).foregroundStyle(.secondary)

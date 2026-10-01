@@ -1,0 +1,8 @@
+Tool: built-in image_gen
+Mode: precise-object-edit
+Reference: existing tobyshot-dark-glass-primary.png from the primary checkout
+Output: tobyshot-dark-glass-app-icon.png
+Purpose: fill the macOS icon mask without an additional outer plate.
+
+Prompt:
+Use case: precise-object-edit. Edit target: the attached existing TobyShot dark glass logo. Preserve this exact design and identity faithfully. Prepare ONE production macOS app icon artwork as a square opaque full-bleed bitmap so macOS can mask it itself. REMOVE ALL transparent exterior padding. Extend the dark navy frosted-glass surface smoothly all the way to all four canvas edges AND all four square corners. The final image is completely opaque everywhere, with no separately drawn rounded square silhouette, no outer gray or white plate, no transparent corners, no external background, no shadow beyond a tile, and no margin around a floating tile. The glass IS the image surface and fills the entire square canvas. Keep the recognizable three large capture brackets (sky-blue upper left, ivory upper right and lower left), vivid red circular capture button with graphite ring, and white cursor overlapping from lower right. Keep their exact layout, relative positions, rounded geometry, materials, colors and lighting from the reference. Scale the original icon body to occupy the entire image square, enlarging the contents proportionally to remove the original exterior padding. Preserve comfortable interior spacing. No redesign, no text, no new elements. The finished export must be 1:1 square, ideally 1024x1024, all 100% opaque dark navy glass at every edge. Do not draw an extra outer rim or container. This is icon artwork, not a product render or icon placed on a background.

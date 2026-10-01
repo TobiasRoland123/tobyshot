@@ -54,35 +54,116 @@ struct AnnotationShortcutTests {
         #expect(model.strokeWidth == 1)
     }
 
-    @Test func saveAndSaveAsStayOpenAndDoneClosesOnlyAfterSuccessfulSave() {
+    @Test func commandSSavesAndClosesOnlyAfterSuccessfulSave() {
+        _ = NSApplication.shared
+        let name = "TobyShot.EditorShortcutTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let manager = HotKeyManager(defaults: defaults)
+        var closeCallbacks = 0
+        var succeeds = true
+        let editor = AnnotationEditorWindow(image: image(), sourceURL: nil, shortcuts: manager,
+            onSave: { _, ask in #expect(!ask); return succeeds }, onCopy: { _ in }, onPin: { _ in })
+        let tracking = CloseTrackingWindow()
+        editor.window = tracking
+
+        editor.editorModel.tool = .text
+        editor.editorModel.begin(at: CGPoint(x: 20, y: 30))
+        editor.editorModel.updateText("Unsaved draft")
+        #expect(editor.editorModel.hasUnsavedChanges)
+        editor.onSaveAndClose = { [weak editor] completed in
+            #expect(completed === editor)
+            closeCallbacks += 1
+        }
+
+        succeeds = false // Covers cancelled and unsuccessful save results.
+        #expect(editor.handleKeyEvent(event(kVK_ANSI_S, modifiers: .command)))
+        #expect(tracking.closeCount == 0)
+        #expect(closeCallbacks == 0)
+        #expect(editor.editorModel.hasUnsavedChanges)
+        #expect(editor.editorModel.annotations.first?.text == "Unsaved draft")
+
+        succeeds = true
+        #expect(editor.handleKeyEvent(event(kVK_ANSI_S, modifiers: .command)))
+        #expect(tracking.closeCount == 1)
+        #expect(closeCallbacks == 1)
+        #expect(!editor.editorModel.hasUnsavedChanges)
+        #expect(editor.editorModel.editingTextID == nil)
+        editor.editorModel.undo()
+        #expect(editor.editorModel.annotations.isEmpty)
+    }
+
+    @Test func saveAsStaysOpenAndDoneClosesOnlyAfterSuccessfulSave() {
         _ = NSApplication.shared
         let name = "TobyShot.EditorShortcutTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         let manager = HotKeyManager(defaults: defaults)
         var requestedSaveAs: [Bool] = []
+        var closeCallbacks = 0
         var succeeds = true
         let editor = AnnotationEditorWindow(image: image(), sourceURL: nil, shortcuts: manager,
             onSave: { _, ask in requestedSaveAs.append(ask); return succeeds }, onCopy: { _ in }, onPin: { _ in })
         let tracking = CloseTrackingWindow()
         editor.window = tracking
-        #expect(editor.handleKeyEvent(event(kVK_ANSI_S, modifiers: .command)))
+        editor.onSaveAndClose = { [weak editor] completed in
+            #expect(completed === editor)
+            closeCallbacks += 1
+        }
+
         #expect(editor.handleKeyEvent(event(kVK_ANSI_S, modifiers: [.command, .shift])))
-        #expect(requestedSaveAs == [false, true])
+        #expect(requestedSaveAs == [true])
         #expect(tracking.closeCount == 0)
+        #expect(closeCallbacks == 0)
+
         succeeds = false
         #expect(editor.handleKeyEvent(event(kVK_Return, modifiers: .command)))
         #expect(tracking.closeCount == 0)
+        #expect(closeCallbacks == 0)
         succeeds = true
         #expect(editor.handleKeyEvent(event(kVK_Return, modifiers: .command)))
         #expect(tracking.closeCount == 1)
+        #expect(closeCallbacks == 1)
         #expect(!editor.handleKeyEvent(event(kVK_ANSI_Z, modifiers: [.command, .option])))
     }
 
+    @Test func textViewKeepsTypingAndCopyShortcutsWhileCommandSSaves() {
+        _ = NSApplication.shared
+        let name = "TobyShot.EditorShortcutTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let manager = HotKeyManager(defaults: defaults)
+        var saveCount = 0
+        let editor = AnnotationEditorWindow(image: image(), sourceURL: nil, shortcuts: manager,
+            onSave: { _, _ in saveCount += 1; return true }, onCopy: { _ in }, onPin: { _ in })
+        let tracking = CloseTrackingWindow()
+        let textView = NSTextView(frame: .zero)
+        tracking.contentView = NSView(frame: .zero)
+        tracking.contentView?.addSubview(textView)
+        editor.window = tracking
+        tracking.makeFirstResponder(textView)
+
+        #expect(tracking.firstResponder === textView)
+        #expect(!editor.handleKeyEvent(event(kVK_ANSI_T, modifiers: [])))
+        #expect(!editor.handleKeyEvent(event(kVK_ANSI_C, modifiers: .command)))
+        #expect(saveCount == 0)
+        #expect(editor.handleKeyEvent(event(kVK_ANSI_S, modifiers: .command)))
+        #expect(saveCount == 1)
+        #expect(tracking.closeCount == 1)
+    }
+
     private func event(_ code: Int, modifiers: NSEvent.ModifierFlags) -> NSEvent {
-        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
-            windowNumber: 0, context: nil, characters: code == kVK_ANSI_Z ? "z" : "s",
-            charactersIgnoringModifiers: code == kVK_ANSI_Z ? "z" : "s", isARepeat: false, keyCode: UInt16(code))!
+        let character: String
+        switch code {
+        case kVK_Return: character = "\r"
+        case kVK_ANSI_T: character = "t"
+        case kVK_ANSI_C: character = "c"
+        case kVK_ANSI_Z: character = "z"
+        default: character = "s"
+        }
+        return NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+            windowNumber: 0, context: nil, characters: character,
+            charactersIgnoringModifiers: character, isARepeat: false, keyCode: UInt16(code))!
     }
 }
 

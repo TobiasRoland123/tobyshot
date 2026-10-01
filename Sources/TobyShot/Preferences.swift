@@ -21,7 +21,8 @@ enum Preferences {
             "annotationFont": "system", "annotationArrowStyle": "clean", "annotationArrowStroke": "solid",
             "editorAlwaysOnTop": false, "showColorNames": false,
             "filenameTemplate": "TobyShot {date} at {time}", "askFilename": false, "retinaSuffix": false,
-            "clipboardMode": "File & Image", "historyDays": 7, "ocrLineBreaks": true, "ocrLanguage": "Automatic",
+            "clipboardMode": "File & Image", "historyDays": 7, "screenshotRetentionDays": 0,
+            "ocrLineBreaks": true, "ocrLanguage": "Automatic",
             "pinnedRounded": true, "pinnedShadow": true, "pinnedBorder": true, "wallpaperStyle": "Midnight"
         ])
     }

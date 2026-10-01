@@ -20,6 +20,7 @@ struct AnnotationCanvasTextTests {
         #expect(editor.frame.width > 40)
         #expect(canvas.textView(editor, doCommandBy: #selector(NSResponder.insertNewline(_:))))
         #expect(model.editingTextID == nil)
+        #expect(model.tool == .select)
         #expect(canvas.subviews.isEmpty)
         model.undo()
         #expect(model.annotations.isEmpty)
@@ -104,6 +105,74 @@ struct AnnotationCanvasTextTests {
         #expect(model.annotations == [original])
     }
 
+    @Test(arguments: [CGFloat(0), 0.5, 1, 2])
+    func drawingOutsideCanvasKeepsDragCoordinatesStableUntilRelease(zoom: CGFloat) throws {
+        let (model, canvas, window) = makeCanvas()
+        defer { window.close() }
+        model.zoom = zoom
+        model.tool = .line
+        let originalBounds = canvas.layoutCanvasBounds
+        let start = CGPoint(x: -10, y: 40)
+        canvas.mouseDown(with: mouse(.leftMouseDown, at: viewPoint(start, model: model, canvas: canvas), canvas: canvas, window: window))
+        for end in [CGPoint(x: -20, y: -15), CGPoint(x: -30, y: -25)] {
+            canvas.mouseDragged(with: mouse(.leftMouseDragged, at: viewPoint(end, model: model, canvas: canvas), canvas: canvas, window: window))
+            canvas.synchronizeTextEditor()
+            #expect(canvas.layoutCanvasBounds == originalBounds)
+            let annotation = try #require(model.annotations.first)
+            #expect(abs(annotation.start.x - start.x) < 0.001)
+            #expect(abs(annotation.end.x - end.x) < 0.001)
+            #expect(abs(annotation.end.y - end.y) < 0.001)
+        }
+        canvas.mouseUp(with: mouse(.leftMouseUp, at: .zero, canvas: canvas, window: window))
+        #expect(canvas.layoutCanvasBounds == model.canvasBounds)
+        #expect(canvas.layoutCanvasBounds.minX < -30)
+        #expect(canvas.layoutCanvasBounds.minY < -25)
+
+        // Hit testing uses the expanded canvas's translated origin on the next gesture.
+        model.tool = .select
+        canvas.synchronizeTextEditor()
+        let hit = viewPoint(start, model: model, canvas: canvas)
+        canvas.mouseDown(with: mouse(.leftMouseDown, at: hit, canvas: canvas, window: window))
+        #expect(model.selectedID == model.annotations.first?.id)
+        canvas.mouseUp(with: mouse(.leftMouseUp, at: hit, canvas: canvas, window: window))
+    }
+
+    @Test func textCanStartOutsideCanvasAndKeepsItsInsertionPointSteady() throws {
+        let (model, canvas, window) = makeCanvas()
+        defer { window.close() }
+        model.tool = .text
+        let originalBounds = canvas.layoutCanvasBounds
+        let start = CGPoint(x: -20, y: -20)
+        canvas.mouseDown(with: mouse(.leftMouseDown, at: viewPoint(start, model: model, canvas: canvas), canvas: canvas, window: window))
+        let editor = try #require(canvas.subviews.compactMap { $0 as? NSTextView }.first)
+        let origin = editor.frame.origin
+        editor.insertText("Outside\ncanvas", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(editor.frame.origin == origin)
+        #expect(canvas.layoutCanvasBounds == originalBounds)
+        #expect(model.annotations.first?.start == start)
+        #expect(model.renderedImage().size.width > model.pixelSize.width)
+        #expect(canvas.textView(editor, doCommandBy: #selector(NSResponder.insertNewline(_:))))
+        #expect(canvas.layoutCanvasBounds == model.canvasBounds)
+    }
+
+    @Test(arguments: [AnnotationTool.crop, .pixelate])
+    func sourceOnlyToolsStillRequireAStartInsideTheImage(tool: AnnotationTool) {
+        let (model, canvas, window) = makeCanvas()
+        defer { window.close() }
+        model.tool = tool
+        let start = viewPoint(CGPoint(x: -10, y: -10), model: model, canvas: canvas)
+        canvas.mouseDown(with: mouse(.leftMouseDown, at: start, canvas: canvas, window: window))
+        #expect(model.annotations.isEmpty)
+        #expect(model.cropRect == nil)
+    }
+
+    private func viewPoint(_ point: CGPoint, model: AnnotationEditorModel, canvas: AnnotationCanvasView) -> CGPoint {
+        let bounds = canvas.layoutCanvasBounds
+        let scale = model.zoom == 0 ? min((canvas.bounds.width - 48) / bounds.width, (canvas.bounds.height - 48) / bounds.height) : model.zoom
+        return CGPoint(x: (canvas.bounds.width - bounds.width * scale) / 2 + (point.x - bounds.minX) * scale,
+                       y: (canvas.bounds.height - bounds.height * scale) / 2 + (point.y - bounds.minY) * scale)
+    }
+
     private func mouse(_ type: NSEvent.EventType, at point: CGPoint, canvas: NSView, window: NSWindow) -> NSEvent {
         NSEvent.mouseEvent(with: type, location: canvas.convert(point, to: nil), modifierFlags: [],
             timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
@@ -111,11 +180,11 @@ struct AnnotationCanvasTextTests {
 
     private func makeCanvas() -> (AnnotationEditorModel, AnnotationCanvasView, NSWindow) {
         _ = NSApplication.shared
-        let image = NSImage(size: CGSize(width: 500, height: 300))
-        image.lockFocus()
-        NSColor.white.setFill()
-        CGRect(x: 0, y: 0, width: 500, height: 300).fill()
-        image.unlockFocus()
+        let context = CGContext(data: nil, width: 500, height: 300, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(NSColor.white.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: 500, height: 300))
+        let image = NSImage(cgImage: context.makeImage()!, size: CGSize(width: 500, height: 300))
         let model = AnnotationEditorModel(image: image, sourceURL: nil)
         model.zoom = 1
         let canvas = AnnotationCanvasView(frame: CGRect(x: 0, y: 0, width: 600, height: 400))

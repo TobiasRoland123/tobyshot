@@ -7,7 +7,7 @@ struct TobyShotApp {
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
-        app.setActivationPolicy(.regular)
+        app.setActivationPolicy(.accessory)
         app.run()
         withExtendedLifetime(delegate) {}
     }
@@ -23,9 +23,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let hotKeys = HotKeyManager()
     private var preferencesObserver: NSObjectProtocol?
     private var pruneTimer: Timer?
+    private var screenshotRetentionDays = 0
+    private lazy var menuBarImage: NSImage? = {
+        let image = Bundle.main.url(forResource: "MenuBarIcon", withExtension: "tiff")
+            .flatMap(NSImage.init(contentsOf:))
+            ?? NSImage(systemSymbolName: "viewfinder", accessibilityDescription: "TobyShot")
+        image?.size = NSSize(width: 18, height: 18)
+        image?.isTemplate = true
+        image?.accessibilityDescription = "TobyShot"
+        return image
+    }()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Preferences.register()
+        screenshotRetentionDays = Preferences.int("screenshotRetentionDays")
         NSApp.appearance = NSAppearance(named: .darkAqua)
         coordinator = AppCoordinator(shortcuts: hotKeys)
         hotKeys.onChange = { [weak self] in self?.refreshShortcutMenus() }
@@ -39,10 +50,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotKeys.register()
         refreshStatusItem()
         preferencesObserver = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.refreshStatusItem() }
+            Task { @MainActor in
+                guard let self else { return }
+                self.refreshStatusItem()
+                let days = Preferences.int("screenshotRetentionDays")
+                if days != self.screenshotRetentionDays {
+                    self.screenshotRetentionDays = days
+                    self.pruneCaptureHistory()
+                }
+            }
         }
         pruneTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
-            Task { @MainActor in try? self?.coordinator.store.prune() }
+            Task { @MainActor in self?.pruneCaptureHistory() }
         }
         showLibrary()
         if !hotKeys.issues.isEmpty { coordinator.toast("Some shortcuts are already in use. Customize them in Settings → Shortcuts.") }
@@ -51,7 +70,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        if coordinator != nil { hotKeys.register() }
+        if coordinator != nil { hotKeys.register(); pruneCaptureHistory() }
+    }
+
+    private func pruneCaptureHistory() {
+        do { try coordinator.store.prune() }
+        catch { NSLog("TobyShot automatic deletion: %@", error.localizedDescription) }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -105,7 +129,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
                 let menu = NSMenu(); menu.delegate = self; statusItem?.menu = menu
             }
-            statusItem?.button?.image = NSImage(systemSymbolName: coordinator.isRecording ? "record.circle.fill" : "viewfinder", accessibilityDescription: "TobyShot")
+            statusItem?.button?.image = coordinator.isRecording
+                ? NSImage(systemSymbolName: "record.circle.fill", accessibilityDescription: "TobyShot")
+                : menuBarImage
             statusItem?.button?.contentTintColor = coordinator.isRecording ? .systemRed : nil
             statusItem?.button?.title = coordinator.isRecording ? " \(coordinator.recordingTime)" : ""
         } else if let item = statusItem { NSStatusBar.system.removeStatusItem(item); statusItem = nil }

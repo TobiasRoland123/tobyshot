@@ -31,31 +31,50 @@ enum AnnotationArrowPath {
     static func make(_ annotation: EditorAnnotation) -> CGPath {
         let from = annotation.reversed ? annotation.end : annotation.start
         let to = annotation.reversed ? annotation.start : annotation.end
-        let length = hypot(to.x - from.x, to.y - from.y)
-        let angle = atan2(to.y - from.y, to.x - from.x)
+        let dx = to.x - from.x, dy = to.y - from.y
+        let length = hypot(dx, dy)
+        let angle = atan2(dy, dx)
+        let cosine = cos(angle), sine = sin(angle)
+        // Bending is stored as the curve midpoint's displacement. A quadratic
+        // Bezier reaches that midpoint when its control point is displaced by 2x.
+        let bend = annotation.arrowBend
+        let localBend = CGPoint(x: bend.x * cosine + bend.y * sine,
+                                y: -bend.x * sine + bend.y * cosine)
+        let control = CGPoint(x: length / 2 + 2 * localBend.x, y: 2 * localBend.y)
         let head = max(10, annotation.width * 3)
         let path = CGMutablePath()
         let shaft = CGMutablePath()
         let tip = CGPoint(x: length, y: 0)
+        // The derivative at t=1 points from the control point toward the tip.
+        // A coincident control and tip has no tangent, so use the chord direction.
+        let tangentX = tip.x - control.x, tangentY = tip.y - control.y
+        let tangentAngle = hypot(tangentX, tangentY) > .ulpOfOne ? atan2(tangentY, tangentX) : 0
         let wings = [-CGFloat.pi / 6, .pi / 6].map {
-            CGPoint(x: length - head * cos($0), y: -head * sin($0))
+            CGPoint(x: length - head * cos(tangentAngle + $0),
+                    y: -head * sin(tangentAngle + $0))
         }
         if annotation.arrowStyle == .clean {
             shaft.move(to: .zero)
-            shaft.addLine(to: tip)
+            if bend == .zero {
+                shaft.addLine(to: tip)
+            } else {
+                shaft.addQuadCurve(to: tip, control: control)
+            }
             for wing in wings {
                 path.move(to: tip)
                 path.addLine(to: wing)
             }
         } else {
-            var random = SketchRandom(state: annotation.arrowSeed)
+            var random = AnnotationSketchPath.Random(state: annotation.arrowSeed)
             let roughness: CGFloat = annotation.arrowStyle == .sketch ? 1 : 2
             let amplitude = min(6, max(1.5, annotation.width)) * roughness * min(1, length / 40)
             let passes = annotation.arrowStyle == .sketch ? 1 : 2
             for _ in 0..<passes {
-                addStroke(to: shaft, from: .zero, to: tip, amplitude: amplitude, random: &random)
+                AnnotationSketchPath.addStroke(to: shaft, from: .zero, control: control, to: tip,
+                                               amplitude: amplitude, random: &random)
                 for wing in wings {
-                    addStroke(to: path, from: tip, to: wing, amplitude: amplitude * 0.55, random: &random)
+                    AnnotationSketchPath.addStroke(to: path, from: tip, to: wing,
+                                                   amplitude: amplitude * 0.55, random: &random)
                 }
             }
         }
@@ -66,28 +85,4 @@ enum AnnotationArrowPath {
         return path.copy(using: &transform)!
     }
 
-    private static func addStroke(to path: CGMutablePath, from: CGPoint, to: CGPoint,
-                                  amplitude: CGFloat, random: inout SketchRandom) {
-        let dx = to.x - from.x, dy = to.y - from.y
-        let length = max(1, hypot(dx, dy))
-        let normal = CGPoint(x: -dy / length, y: dx / length)
-        let first = random.offset(amplitude)
-        let second = random.offset(amplitude)
-        let startOffset = random.offset(amplitude * 0.35)
-        path.move(to: CGPoint(x: from.x + normal.x * startOffset, y: from.y + normal.y * startOffset))
-        path.addCurve(to: to,
-                      control1: CGPoint(x: from.x + dx / 3 + normal.x * first,
-                                        y: from.y + dy / 3 + normal.y * first),
-                      control2: CGPoint(x: from.x + dx * 2 / 3 + normal.x * second,
-                                        y: from.y + dy * 2 / 3 + normal.y * second))
-    }
-
-    private struct SketchRandom {
-        var state: UInt64
-
-        mutating func offset(_ amplitude: CGFloat) -> CGFloat {
-            state = state &* 6364136223846793005 &+ 1442695040888963407
-            return (CGFloat(state >> 32) / CGFloat(UInt32.max) * 2 - 1) * amplitude
-        }
-    }
 }

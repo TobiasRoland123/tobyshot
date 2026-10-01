@@ -13,6 +13,12 @@ struct CaptureItem: Identifiable, Codable, Equatable {
     var width: Int
     var height: Int
     var exportedPath: String?
+    var exportedPaths: [String]? = nil
+    var exportPaths: [String] {
+        var paths = exportedPaths ?? []
+        if let exportedPath, !paths.contains(exportedPath) { paths.append(exportedPath) }
+        return paths
+    }
     var dimensions: String { "\(width) × \(height)" }
 }
 
@@ -80,6 +86,18 @@ final class CaptureStore: ObservableObject {
     func markExported(_ item: CaptureItem, at url: URL) throws {
         guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
         var updatedItems = items
+        // A Save As replacement belongs to the capture that most recently exported it.
+        for otherIndex in updatedItems.indices where otherIndex != index {
+            let other = updatedItems[otherIndex]
+            guard other.exportPaths.contains(url.path) else { continue }
+            updatedItems[otherIndex].exportedPaths = other.exportPaths.filter { $0 != url.path }
+            if other.exportedPath == url.path {
+                updatedItems[otherIndex].exportedPath = updatedItems[otherIndex].exportedPaths?.last
+            }
+        }
+        var paths = updatedItems[index].exportPaths
+        if !paths.contains(url.path) { paths.append(url.path) }
+        updatedItems[index].exportedPaths = paths
         updatedItems[index].exportedPath = url.path
         try commit(updatedItems)
     }
@@ -91,11 +109,34 @@ final class CaptureStore: ObservableObject {
         thumbnails[item.id] = nil
     }
 
-    func prune(now: Date = Date()) throws {
-        let days = Preferences.int("historyDays")
-        guard days > 0 else { return }
-        let cutoff = now.addingTimeInterval(-Double(days) * 86_400)
-        for item in items.filter({ $0.date < cutoff }) { try remove(item) }
+    func prune(now: Date = Date(), screenshotDays: Int? = nil, recordingDays: Int? = nil) throws {
+        let imageDays = screenshotDays ?? Preferences.int("screenshotRetentionDays")
+        let videoDays = recordingDays ?? Preferences.int("historyDays")
+        let expired = items.filter { item in
+            let days = item.kind == .image ? imageDays : videoDays
+            return days > 0 && item.date <= now.addingTimeInterval(-Double(days) * 86_400)
+        }
+        let expiredIDs = Set(expired.map(\.id))
+        var firstError: Error?
+        for item in expired {
+            do {
+                if item.kind == .image {
+                    for path in item.exportPaths {
+                        // Older indexes can contain a path shared with a newer capture.
+                        guard !items.contains(where: { !expiredIDs.contains($0.id) && $0.exportPaths.contains(path) }),
+                              FileManager.default.fileExists(atPath: path) else { continue }
+                        let attributes = try FileManager.default.attributesOfItem(atPath: path)
+                        guard attributes[.type] as? FileAttributeType == .typeRegular else { continue }
+                        try FileManager.default.removeItem(atPath: path)
+                    }
+                }
+                try remove(item)
+            } catch {
+                // Keep failed entries so the next cleanup can retry, and continue with other captures.
+                if firstError == nil { firstError = error }
+            }
+        }
+        if let firstError { throw firstError }
     }
 
     private func commit(_ updatedItems: [CaptureItem], creating newFile: URL? = nil, removing obsoleteFile: URL? = nil, prepare: () throws -> Void = {}) throws {
@@ -188,8 +229,7 @@ enum ImageOutput {
         return ctx.makeImage().map { NSImage(cgImage: $0, size: size) } ?? result
     }
 
-    static func copy(_ image: NSImage?, file: URL?) {
-        let board = NSPasteboard.general
+    static func copy(_ image: NSImage?, file: URL?, to board: NSPasteboard = .general) {
         board.clearContents()
         let item = NSPasteboardItem()
         let mode = Preferences.string("clipboardMode")

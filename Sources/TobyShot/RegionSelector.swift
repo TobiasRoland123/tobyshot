@@ -31,6 +31,7 @@ final class RegionSelector {
                 let panel = CapturePanel(contentRect: snapshot.screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
                 panel.level = .screenSaver
                 panel.isOpaque = true
+                panel.animationBehavior = .none
                 panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
                 panel.acceptsMouseMovedEvents = true
                 let view = SelectionView(snapshot: snapshot, windows: windows, instruction: instruction) { [weak self] selection in self?.finish(selection) }
@@ -44,9 +45,9 @@ final class RegionSelector {
     }
 
     private func finish(_ selection: ScreenSelection?) {
-        NSCursor.pop()
         for panel in panels { panel.orderOut(nil) }
         panels.removeAll()
+        NSCursor.pop()
         continuation?.resume(returning: selection)
         continuation = nil
     }
@@ -69,15 +70,19 @@ private final class SelectionView: NSView {
         self.candidates = windows.sorted { (order.firstIndex(of: $0.windowID) ?? Int.max) < (order.firstIndex(of: $1.windowID) ?? Int.max) }
         super.init(frame: CGRect(origin: .zero, size: snapshot.screen.frame.size))
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.inVisibleRect, .activeAlways, .mouseMoved, .mouseEnteredAndExited], owner: self))
+        // AppKit does not deliver cursor updates for .activeAlways tracking areas.
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.inVisibleRect, .activeInKeyWindow, .cursorUpdate], owner: self))
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .crosshair)
+    }
+    override func cursorUpdate(with event: NSEvent) { NSCursor.crosshair.set() }
 
     override func draw(_ dirtyRect: NSRect) {
         let image = NSImage(cgImage: snapshot.image, size: bounds.size)
         image.draw(in: bounds, from: .zero, operation: .copy, fraction: 1, respectFlipped: true, hints: nil)
-        let shade = NSBezierPath(rect: bounds)
-        if !selection.isEmpty { shade.appendRect(selection); shade.windingRule = .evenOdd }
-        NSColor.black.withAlphaComponent(0.35).setFill(); shade.fill()
         if !selection.isEmpty {
             NSColor.controlAccentColor.setStroke()
             let outline = NSBezierPath(rect: selection); outline.lineWidth = 2; outline.stroke()
@@ -96,7 +101,10 @@ private final class SelectionView: NSView {
         let paragraph = NSMutableParagraphStyle(); paragraph.alignment = .center
         (text as NSString).draw(in: CGRect(x: point.x, y: point.y + 8, width: width, height: 20), withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor.white, .paragraphStyle: paragraph])
     }
-    override func mouseEntered(with event: NSEvent) { window?.makeKey(); window?.makeFirstResponder(self) }
+    override func mouseEntered(with event: NSEvent) {
+        window?.makeKey(); window?.makeFirstResponder(self)
+        NSCursor.crosshair.set()
+    }
     override func mouseMoved(with event: NSEvent) {
         guard !candidates.isEmpty else { return }
         let p = convert(event.locationInWindow, from: nil)

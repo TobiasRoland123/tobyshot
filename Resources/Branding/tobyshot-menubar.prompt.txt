@@ -1,0 +1,24 @@
+Tool: built-in image_gen
+Mode: edit with primary logo reference; transparent background
+Reference: tobyshot-primary.png
+Output: tobyshot-menubar.png
+Verification: rendered at 18 px and 36 px on light and dark surfaces; dark preview inverts the source to emulate template rendering.
+
+Prompt:
+Create ONE clean monochrome menu-bar companion logo from the attached approved TobyShot primary logo.
+
+The attached blue masking-tape capital T is the exact identity reference. Preserve its recognizable broad crossbar rising slightly to the right, near-vertical descending tape stem, and small peeled/curling LEFT crossbar end. Simplify it into a bold flat black silhouette specifically designed to remain legible at 18 pixels high in a macOS menu bar.
+
+Deliver a SINGLE large, crisp, flat BLACK mark on a genuinely TRANSPARENT background. The white-looking curl separation must be an actual transparent negative-space cut, not painted white, so the icon can be used as a macOS template image on either light or dark surfaces.
+
+Design:
+- Strong capital T formed by two broad tape strips.
+- Crossbar about three times the width of the stem, sloping upward-right by roughly 5–7 degrees.
+- Preserve the peeled LEFT tip with one simple angular flap and ONE decisive clear diagonal/curved negative-space crease. Give this crease enough width to stay readable when small.
+- Reduce torn tape edges to only two or three broad irregularities at the right end and the stem's bottom; mostly smooth sides. No tiny serrations.
+- Flat unified black fill; no visible overlap patch, no separate gray areas.
+- Stem centered beneath the crossbar, slightly to the right as in the reference.
+- No paper texture, no dimensional shading, no gray material, no cast shadow, no outlines, no text, no viewfinder, no camera, no badge, no background rectangle, no secondary logo.
+- Balanced compact silhouette and clean antialiasing. Keep the shape bold and simple so the T and peeled corner remain clear at small sizes.
+
+Center the ONE mark with even transparent padding of approximately 10 percent around it. This is the finished small-scale companion design shown large for clean export, not a concept board, not a rendered menu-bar screenshot, and not another blue primary logo. Pure black artwork and alpha only.

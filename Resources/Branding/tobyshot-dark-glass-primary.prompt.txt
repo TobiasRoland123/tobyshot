@@ -1,0 +1,22 @@
+Tool: built-in image_gen
+Mode: faithful cleanup with reference image; transparent exterior background
+Reference: CaptureConcepts/dark-glass.png
+Output: tobyshot-dark-glass-primary.png
+Verification: rendered on white and charcoal backgrounds; checked smooth alpha edges and preserved layout.
+
+Prompt:
+Use case: precise-object-edit / logo-brand.
+The attached image is the USER-SELECTED "Dark Glass" TobyShot app icon. Produce ONE clean finished primary logo export of this exact design, preserving the identity and composition. This is faithful final cleanup, NOT another variation.
+
+Keep the opaque charcoal-blue rounded-square tile and its softly lit frosted dark-glass finish, slim polished perimeter rim, luminous upper-left edge, three photographic capture-corner brackets, circular red center button with graphite ring, and white mouse-pointer arrow overlapping from the lower right. Upper-left bracket remains sky blue, upper-right and lower-left remain ivory. There is no lower-right bracket because the cursor occupies that area. Keep the same proportions, positions, palette, roundness, pointer orientation and comfortable breathing room around the contents. Preserve the premium dimensional material and controlled lighting.
+
+Clean up:
+- Create a mathematically smooth continuous outer rounded-square contour, with crisp antialiasing and no bumps or rough cutout.
+- Remove stray cyan, blue and white pixels outside the tile, outline fringing, background haze and noisy edge fragments.
+- Use a subtle smooth frosted-glass surface with clean gradient transitions; reduce incidental gritty/pixel noise while preserving glass character.
+- Sharpen the capture-bracket curves and cursor's arrow geometry into consistent crisp contours without changing their recognizable shapes.
+- Keep the red disc smooth and vivid; polish the graphite circular ring and pointer contact shading.
+- Restrain blooming or glare so all internal shapes remain clearly legible.
+- The entire interior tile is fully opaque, including its dark corners; no holes, no translucency through the body of the tile.
+
+Deliver ONE isolated icon centered on a square genuinely transparent alpha canvas, with approximately 10 percent equal clear padding outside the tile. Only the exterior outside the rounded-square tile is transparent. No large exterior cast shadow, no opaque white or black backdrop, no checkerboard pixels, no added square behind the tile. No words, watermark, labels, small companion, alternate marks or comparison board. Maintain the chosen design faithfully, ready for use as a standalone primary app logo.

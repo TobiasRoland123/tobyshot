@@ -1,0 +1,9 @@
+Tool: built-in image_gen
+Mode: edit with reference image; transparent background
+Reference: user-provided comparison sheet, selected large blue 02 Tape T in the top-right panel.
+Output: tobyshot-primary.png
+
+Prompt:
+Extract and recreate ONLY the large blue masking-tape capital T in the TOP RIGHT of the attached reference, inside the red rectangle. Deliver one beautifully finished standalone primary logo, centered with generous padding on a genuinely transparent background. Do not include the red rectangle, words, tiny black logo, page layout, or any other objects.
+
+Match the approved original's soft medium sky-blue color, TWO thin matte paper tape strips, gently upward-sloping crossbar, darker square overlap, rough torn right and bottom ends, and small curled LEFT end showing warm-white adhesive backing. Keep the natural tactile paper character but make the fiber texture very subtle and smooth, like the original viewed at normal scale. This is thin blue masking tape, not chunky material. Use precise clean alpha edges. No cast shadow outside the material, no outlines, no neon cyan fringes, no stray pixels, no fog. Preserve the original proportions and asymmetry. The opaque off-white underside is part of the logo. Aim for premium product identity artwork with a clean restrained finish. One logo only, no text, no other marks.
