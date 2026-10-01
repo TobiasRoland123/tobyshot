@@ -77,6 +77,8 @@ After drawing, placing a numbered step, applying a crop, or finishing text entry
 
 Annotation edits automatically update the clipboard with the latest full image. This includes live text, completed drawing and resize gestures, appearance and background changes, crops, and undo/redo. Automatic copies respect **Settings → Advanced → Copy format** and do not add captures to history or show copy notifications. Selection, zoom, and tool changes leave the clipboard alone.
 
+The editor draws shapes and text as vector overlays so they stay crisp when zooming. It caches the screenshot preview at the display resolution and reuses pixelation patches while other objects move. Saved and copied images retain the full output resolution.
+
 Hold Shift while drawing to snap lines and arrows to 45° increments, make rectangles and filled rectangles square, or make ellipses circular. Press or release Shift at any point during the drag to switch between constrained and free drawing.
 
 With the pointer (Move) tool, drag from empty canvas space to select annotations inside or touching the selection box. Drag any selected annotation to move the group. Delete, Duplicate, and Copy object apply to the entire selection. Shift-drag adds to the selection; Shift-click toggles an annotation. Click empty space or press Escape to clear the selection.

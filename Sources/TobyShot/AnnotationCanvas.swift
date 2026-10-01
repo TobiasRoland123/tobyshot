@@ -50,6 +50,7 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
     private var textEditor: AnnotationTextView?
     private var textEditorID: UUID?
     private var settledCanvasBounds: CGRect?
+    private let previewRenderer = AnnotationPreviewRenderer()
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
@@ -68,11 +69,14 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
         guard let model else { return }
         NSColor(calibratedWhite: 0.095, alpha: 1).setFill(); bounds.fill()
         updateImageGeometry()
-        let image = model.renderedImage(excluding: model.editingTextID)
-        // The preview and exported file share a renderer, including redaction and pixelation.
         let expandedRect = viewRect(model.canvasBounds, scale: imageScale)
         NSColor(calibratedWhite: 0.16, alpha: 1).setFill(); expandedRect.fill()
-        image.draw(in: expandedRect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
+        if let context = NSGraphicsContext.current?.cgContext {
+            previewRenderer.draw(image: model.image, annotations: model.annotations.filter { $0.id != model.editingTextID },
+                                 canvasBounds: model.canvasBounds, background: model.background, cornerRadius: model.cornerRadius,
+                                 imageOrigin: displayedImageRect.origin, scale: imageScale,
+                                 backingScale: window?.backingScaleFactor ?? 1, in: context)
+        }
         for selected in model.annotations where model.selectedIDs.contains(selected.id) {
             let selection = selectionRect(for: selected)
             NSColor.controlAccentColor.setStroke()

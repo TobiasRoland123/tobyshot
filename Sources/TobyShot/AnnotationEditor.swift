@@ -915,16 +915,7 @@ enum AnnotationRenderer {
         context.translateBy(x: 0, y: CGFloat(height))
         context.scaleBy(x: 1, y: -1)
         context.translateBy(x: -bounds.minX, y: -bounds.minY)
-        var sourcePixels = [UInt8](repeating: 0, count: annotations.contains(where: { $0.kind == .pixelation }) ? source.width * source.height * 4 : 0)
-        if !sourcePixels.isEmpty {
-            sourcePixels.withUnsafeMutableBytes { raw in
-                if let bitmap = CGContext(data: raw.baseAddress, width: source.width, height: source.height, bitsPerComponent: 8,
-                                          bytesPerRow: source.width * 4, space: CGColorSpaceCreateDeviceRGB(),
-                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
-                    bitmap.draw(source, in: CGRect(x: 0, y: 0, width: source.width, height: source.height))
-                }
-            }
-        }
+        let sourcePixels = annotations.contains(where: { $0.kind == .pixelation }) ? pixelationSourcePixels(source) : []
         for (annotation, geometry) in zip(annotations, geometries) {
             draw(annotation, geometry: geometry, in: context, pixelSize: pixelSize, sourcePixels: sourcePixels)
         }
@@ -944,25 +935,34 @@ enum AnnotationRenderer {
         } else { context.draw(cg, in: imageRect) }
         // Use a top-left image coordinate system for all annotation geometry.
         context.saveGState(); context.translateBy(x: -bounds.minX, y: bounds.maxY); context.scaleBy(x: 1, y: -1)
-        var sourcePixels = [UInt8](repeating: 0, count: annotations.contains(where: { $0.kind == .pixelation }) ? cg.width * cg.height * 4 : 0)
-        if !sourcePixels.isEmpty {
-        sourcePixels.withUnsafeMutableBytes { raw in
-            if let bitmap = CGContext(data: raw.baseAddress, width: cg.width, height: cg.height, bitsPerComponent: 8, bytesPerRow: cg.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
-                bitmap.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
-            }
-        }
-        }
+        let sourcePixels = annotations.contains(where: { $0.kind == .pixelation }) ? pixelationSourcePixels(cg) : []
         for annotation in annotations { draw(annotation, in: context, pixelSize: CGSize(width: cg.width, height: cg.height), sourcePixels: sourcePixels) }
         context.restoreGState()
         guard let result = context.makeImage() else { return image }
         return NSImage(cgImage: result, size: NSSize(width: width, height: height))
     }
 
-    private static func draw(_ a: EditorAnnotation, geometry suppliedGeometry: AnnotationGeometry? = nil, in c: CGContext, pixelSize: CGSize, sourcePixels: [UInt8]) {
+    static func pixelationSourcePixels(_ source: CGImage) -> [UInt8] {
+        var pixels = [UInt8](repeating: 0, count: source.width * source.height * 4)
+        pixels.withUnsafeMutableBytes { raw in
+            if let bitmap = CGContext(data: raw.baseAddress, width: source.width, height: source.height, bitsPerComponent: 8,
+                                      bytesPerRow: source.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+                bitmap.draw(source, in: CGRect(x: 0, y: 0, width: source.width, height: source.height))
+            }
+        }
+        return pixels
+    }
+
+    static func draw(_ a: EditorAnnotation, geometry suppliedGeometry: AnnotationGeometry? = nil, in c: CGContext, pixelSize: CGSize, sourcePixels: [UInt8], shadowScale: CGSize = CGSize(width: 1, height: 1)) {
         let geometry = suppliedGeometry ?? AnnotationGeometry(a, imageSize: pixelSize)
         let col = a.color.cgColor
         c.saveGState(); c.setStrokeColor(col); c.setFillColor(col); c.setLineWidth(geometry.lineWidth); c.setLineCap(.round); c.setLineJoin(.round)
-        if let shadow = geometry.shadow { c.setShadow(offset: shadow.offset, blur: shadow.blur, color: shadow.color) }
+        if let shadow = geometry.shadow {
+            // Quartz shadows ignore subsequent transforms; scale them explicitly for the preview.
+            c.setShadow(offset: CGSize(width: shadow.offset.width * shadowScale.width, height: shadow.offset.height * shadowScale.height),
+                        blur: shadow.blur * abs(shadowScale.width), color: shadow.color)
+        }
         if a.kind == .pixelation {
             pixelate(a, rect: geometry.pixelationRect, in: c, imageSize: pixelSize, sourcePixels: sourcePixels)
         } else {
@@ -997,7 +997,7 @@ enum AnnotationRenderer {
     private static func backgroundCGColor(_ b: AnnotationBackground) -> CGColor {
         switch b { case .none: NSColor.clear.cgColor; case .midnight: NSColor(calibratedRed:0.12,green:0.15,blue:0.22,alpha:1).cgColor; case .lavender: NSColor(calibratedRed:0.47,green:0.36,blue:0.67,alpha:1).cgColor; case .peach: NSColor(calibratedRed:0.9,green:0.5,blue:0.36,alpha:1).cgColor }
     }
-    private static func drawBackground(_ background: AnnotationBackground, in context: CGContext, size: CGSize) {
+    static func drawBackground(_ background: AnnotationBackground, in context: CGContext, size: CGSize) {
         let colors: [CGColor]
         switch background {
         case .none: colors = [NSColor.clear.cgColor, NSColor.clear.cgColor]
