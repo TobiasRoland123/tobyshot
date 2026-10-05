@@ -22,11 +22,15 @@ final class CapturePanel: NSPanel {
 final class RegionSelector {
     private var panels: [NSPanel] = []
     private var continuation: CheckedContinuation<ScreenSelection?, Never>?
+    private var previousApplication: NSRunningApplication?
 
     func select(snapshots: [ScreenSnapshot], windows: [SCWindow], instruction: String) async -> ScreenSelection? {
         guard !snapshots.isEmpty else { return nil }
         return await withCheckedContinuation { continuation in
             self.continuation = continuation
+            let frontmostApplication = NSWorkspace.shared.frontmostApplication
+            previousApplication = frontmostApplication?.processIdentifier != ProcessInfo.processInfo.processIdentifier ? frontmostApplication : nil
+            NSApp.activate(ignoringOtherApps: true)
             for snapshot in snapshots {
                 let panel = CapturePanel(contentRect: snapshot.screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
                 panel.level = .screenSaver
@@ -41,6 +45,7 @@ final class RegionSelector {
                 if snapshot.screen.frame.contains(NSEvent.mouseLocation) { panel.makeKey(); panel.makeFirstResponder(view) }
             }
             NSCursor.crosshair.push()
+            NSCursor.setHiddenUntilMouseMoves(false)
         }
     }
 
@@ -48,6 +53,8 @@ final class RegionSelector {
         for panel in panels { panel.orderOut(nil) }
         panels.removeAll()
         NSCursor.pop()
+        previousApplication?.activate(options: [])
+        previousApplication = nil
         continuation?.resume(returning: selection)
         continuation = nil
     }
