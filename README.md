@@ -1,6 +1,47 @@
 # TobyShot
 
-A native macOS capture app built with Swift, AppKit, SwiftUI, ScreenCaptureKit, and Vision. No web view, Electron runtime, third-party dependencies, account, or cloud service.
+A native macOS capture app built with Swift, AppKit, SwiftUI, ScreenCaptureKit, and Vision. Captures stay on your Mac. Sparkle handles signed app updates from GitHub; no account is needed to use the app.
+
+## Install and update
+
+Download `TobyShot-<version>.dmg` from the configured public GitHub repository's **Releases** page, open it, and drag **TobyShot** into **Applications**. Requires macOS 15 or newer; release builds support both Apple silicon and Intel. The ZIP download contains the same app.
+
+Use **Check for Updates…** in TobyShot's menu bar menu, application menu, or **Settings → About → Updates**. Automatic checks are enabled by default and can be switched off there. When an update is available, Sparkle downloads it, verifies its signature, and replaces the installed app when you approve the update and restart. Settings, exports, and capture history remain in their existing locations. Finish captures or recordings before updating; the existing quit checks also protect unsaved annotation edits.
+
+An older build without the updater needs one initial replacement: quit TobyShot and copy the new app into Applications, replacing the old app. You do not need to uninstall or delete your data. Subsequent versions can update inside the app.
+
+Downloads become available once the first release is published. This source repository is currently private: anonymous update downloads require either making it public or using a separate **public releases repository** while keeping this source private. The app never embeds a GitHub token. Configure the download location before distributing the first updater-enabled version, and keep that location available to existing installs.
+
+## Publish a release
+
+The release workflow creates a **draft** with a universal DMG, ZIP, signed `appcast.xml`, and SHA256 checksums. Publish the draft after reviewing it; ensure it is marked **Latest**. The installed app fetches `https://github.com/<owner>/<release-repository>/releases/latest/download/appcast.xml`, and that feed points at the version's ZIP.
+
+One-time setup:
+
+1. Run `bash scripts/setup-updates.sh` on the Mac that will own update signing. It creates or reuses the `app.tobyshot.mac` Sparkle key in the login Keychain and adds only its public key to `Resources/Info.plist`. This checkout already has its public key configured. On another Mac, import the original private key instead of generating a replacement. Back up that key securely; existing apps trust it for future updates.
+2. If using a separate public repository, set the source repository's Actions variable `RELEASE_REPOSITORY` to `owner/repository` and its secret `RELEASE_TOKEN` to a token with **Contents: Read and write** access to that destination. Otherwise, the workflow uses this repository and its `GITHUB_TOKEN`; it verifies the destination is public before building.
+3. Add the `SPARKLE_PRIVATE_KEY` Actions secret. You can export the existing key into an ignored private file and pipe it directly to GitHub, without printing it:
+
+   ```sh
+   mkdir -p .local-signing
+   (umask 077; .build/artifacts/sparkle/Sparkle/bin/generate_keys \
+     --account app.tobyshot.mac -x .local-signing/sparkle-private-key)
+   gh secret set SPARKLE_PRIVATE_KEY < .local-signing/sparkle-private-key
+   ```
+
+   Store any backup privately and remove the exported file when done. Never commit or upload the key as a release asset.
+4. For normal macOS installation without Gatekeeper's unidentified-developer prompt, configure Developer ID signing and notarization using these Actions secrets: `APPLE_CERTIFICATE_P12_BASE64` (exported Developer ID Application certificate and private key), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_APP_PASSWORD` (app-specific password), and `APPLE_TEAM_ID`. Keep the same app identifier and Developer ID identity across releases to preserve macOS permissions. Without Apple credentials, CI produces an ad-hoc signed build: macOS may require **System Settings → Privacy & Security → Open Anyway** after the first launch attempt, and screen recording permission may need refreshing after updates.
+
+Once the changes are in GitHub, run **Actions → Release → Run workflow** with a version such as `0.2.0`, or push a matching version tag such as `v0.2.0`. Every release must have a higher numeric **build number** (`CFBundleVersion`) than previous releases. CI defaults to its run number plus two; if you override it, keep later builds above your override. Version numbers (`CFBundleShortVersionString`) appear in the UI. Published release assets are never replaced by CI.
+
+To prepare the same files locally without publishing:
+
+```sh
+TOBYSHOT_RELEASE_REPOSITORY=owner/public-release-repository \
+  bash scripts/release.sh 0.2.0 3
+```
+
+Output is in `build/release/`. Local builds retain the existing self-signed development identity unless `TOBYSHOT_SIGNING_IDENTITY` is set. For a Developer ID release, also set `TOBYSHOT_DISTRIBUTION=1`; optionally set `TOBYSHOT_NOTARY_KEYCHAIN_PROFILE` to a stored `notarytool` credential profile. To sign updates with a securely stored private key file instead of the Keychain, set `TOBYSHOT_SPARKLE_PRIVATE_KEY_FILE`. Keep that file outside tracked source. `TOBYSHOT_ARCHS` can override the release default of `arm64 x86_64`.
 
 ## Run
 
@@ -110,6 +151,7 @@ Open `Package.swift` in Xcode if preferred. The app bundle is assembled by `scri
 ## Structure
 
 - `TobyShotApp.swift`: application lifecycle, windows, menus, and shortcuts.
+- `AppUpdater.swift`: Sparkle update checks, settings, and menu integration.
 - `AppCoordinator.swift`: capture, export, annotation, recording, and OCR workflows.
 - `ScreenCaptureService.swift` / `RegionSelector.swift`: native capture and selection.
 - `CaptureStore.swift`: local history, image conversion, clipboard, and output.

@@ -10,8 +10,31 @@ fi
 target="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 identifier="app.tobyshot.mac"
 
+sign_components() {
+    local signing_identity="$1"
+    local signing_keychain="${2:-}"
+    local options=(--force --sign "$signing_identity")
+    [[ -z "$signing_keychain" ]] || options+=(--keychain "$signing_keychain")
+    if [[ "${TOBYSHOT_DISTRIBUTION:-0}" == 1 && "$signing_identity" != - ]]; then
+        options+=(--options runtime --timestamp)
+    fi
+    local framework="$target/Contents/Frameworks/Sparkle.framework"
+    if [[ -d "$framework" ]]; then
+        local component
+        for component in \
+            "$framework/Versions/B/XPCServices/Downloader.xpc" \
+            "$framework/Versions/B/XPCServices/Installer.xpc" \
+            "$framework/Versions/B/Autoupdate" \
+            "$framework/Versions/B/Updater.app" \
+            "$framework"; do
+            /usr/bin/codesign "${options[@]}" --preserve-metadata=entitlements "$component"
+        done
+    fi
+    /usr/bin/codesign "${options[@]}" --identifier "$identifier" "$target"
+}
+
 if [[ -n "${TOBYSHOT_SIGNING_IDENTITY:-}" ]]; then
-    /usr/bin/codesign --force --sign "$TOBYSHOT_SIGNING_IDENTITY" --identifier "$identifier" "$target"
+    sign_components "$TOBYSHOT_SIGNING_IDENTITY" "${TOBYSHOT_SIGNING_KEYCHAIN:-}"
 else
     signing_dir="$(pwd)/.local-signing"
     keychain="$signing_dir/tobyshot-signing.keychain-db"
@@ -87,7 +110,7 @@ else
         trap restore_search_list EXIT
         /usr/bin/security list-keychains -d user -s "${keychains[@]}" "$keychain"
     fi
-    /usr/bin/codesign --force --keychain "$keychain" --sign "$identity" --identifier "$identifier" "$target"
+    sign_components "$identity" "$keychain"
 fi
 
-/usr/bin/codesign --verify --strict --verbose=2 "$target"
+/usr/bin/codesign --verify --deep --strict --verbose=2 "$target"

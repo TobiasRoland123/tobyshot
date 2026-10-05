@@ -7,8 +7,14 @@
     <key>CFBundleExecutable</key><string>TobyShot</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleIconFile</key><string>AppIcon.icns</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>0.2.0</string>
+    <key>CFBundleVersion</key><string>2</string>
+    <key>SUFeedURL</key><string>https://github.com/TobiasRoland123/tobyshot/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key><string>ExF5sEoVhMi0llZLhqzQGAgZQOWIiiW67DXiSQLDvlA=</string>
+    <key>SUEnableAutomaticChecks</key><true/>
+    <key>SUAutomaticallyUpdate</key><false/>
+    <key>SUEnableSystemProfiling</key><false/>
+    <key>SUVerifyUpdateBeforeExtraction</key><true/>
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>

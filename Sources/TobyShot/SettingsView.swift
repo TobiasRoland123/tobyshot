@@ -4,6 +4,7 @@ import ServiceManagement
 
 struct SettingsView: View {
     @ObservedObject var shortcuts: HotKeyManager
+    @ObservedObject var updater: AppUpdater
     @AppStorage("showMenuBar") private var showMenuBar = true
     @AppStorage("hideDesktopIcons") private var hideDesktopIcons = true
     @AppStorage("playSounds") private var playSounds = true
@@ -479,6 +480,24 @@ struct SettingsView: View {
                 InfoRow("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Development")
                 InfoRow("Storage", value: "On this Mac")
                 InfoRow("Cloud services", value: "Coming later")
+            }
+            group("Updates") {
+                ToggleRow("Automatically check for updates", isOn: Binding(
+                    get: { updater.automaticallyChecksForUpdates },
+                    set: { updater.setAutomaticallyChecksForUpdates($0) }
+                ), detail: "Checks GitHub for new versions while TobyShot is running.")
+                    .disabled(updater.configurationError != nil)
+                HStack {
+                    Text(updater.availableVersion.map { "Version \($0) is available" } ?? "Install updates without reinstalling TobyShot.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Check for Updates…", action: updater.checkForUpdates)
+                        .disabled(!updater.canCheckForUpdates)
+                }.padding(.vertical, 8)
+                if let error = updater.configurationError {
+                    Text(error).font(.system(size: 11)).foregroundStyle(.secondary)
+                        .padding(.bottom, 5)
+                }
             }
         }
     }

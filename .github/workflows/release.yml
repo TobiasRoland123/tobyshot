@@ -1,0 +1,196 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable release version (X.Y.Z)
+        required: true
+        type: string
+      build_number:
+        description: Positive CFBundleVersion build number (defaults to run number + 2)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    env:
+      RELEASE_REPOSITORY: ${{ vars.RELEASE_REPOSITORY || 'TobiasRoland123/tobyshot' }}
+    concurrency:
+      group: tobyshot-releases
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate public release destination
+        shell: bash
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_REPOSITORY" != "$GITHUB_REPOSITORY" && -z "$RELEASE_TOKEN" ]]; then
+            echo "RELEASE_TOKEN is required when RELEASE_REPOSITORY differs from the source repository." >&2
+            exit 1
+          fi
+          visibility="$(gh api "repos/${RELEASE_REPOSITORY}" --jq .visibility)"
+          if [[ "$visibility" != public ]]; then
+            echo "${RELEASE_REPOSITORY} is ${visibility}; Sparkle's anonymous feed and release downloads require a public release repository. Configure vars.RELEASE_REPOSITORY to a public repository." >&2
+            exit 1
+          fi
+
+      - name: Test
+        run: bash scripts/test.sh
+
+      - name: Build and package release
+        shell: bash
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+          set +x
+          umask 077
+          temp_dir="$(mktemp -d "${RUNNER_TEMP}/tobyshot-release.XXXXXX")"
+          keychain="${temp_dir}/release.keychain-db"
+          sparkle_key="${temp_dir}/sparkle-private-key"
+          keychain_created=false
+          original_keychains=()
+
+          cleanup() {
+            local status=$?
+            if [[ "$keychain_created" == true ]]; then
+              security list-keychains -d user -s "${original_keychains[@]}" || true
+              security delete-keychain "$keychain" || true
+            fi
+            rm -rf "$temp_dir"
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
+            echo "SPARKLE_PRIVATE_KEY secret is required." >&2
+            exit 1
+          fi
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$sparkle_key"
+          unset SPARKLE_PRIVATE_KEY
+          export TOBYSHOT_SPARKLE_PRIVATE_KEY_FILE="$sparkle_key"
+          export TOBYSHOT_RELEASE_REPOSITORY="$RELEASE_REPOSITORY"
+          export TOBYSHOT_DISTRIBUTION=1
+
+          version="${GITHUB_REF_NAME#v}"
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            version="$INPUT_VERSION"
+          fi
+          build_number="$INPUT_BUILD_NUMBER"
+          if [[ -z "$build_number" ]]; then
+            build_number="$((GITHUB_RUN_NUMBER + 2))"
+          fi
+
+          certificate_values=0
+          for value in "$APPLE_CERTIFICATE_P12_BASE64" "$APPLE_CERTIFICATE_PASSWORD" "$APPLE_SIGNING_IDENTITY"; do
+            [[ -z "$value" ]] || certificate_values=$((certificate_values + 1))
+          done
+          if [[ "$certificate_values" -ne 0 && "$certificate_values" -ne 3 ]]; then
+            echo "Set APPLE_CERTIFICATE_P12_BASE64, APPLE_CERTIFICATE_PASSWORD, and APPLE_SIGNING_IDENTITY together." >&2
+            exit 1
+          fi
+
+          notary_values=0
+          for value in "$APPLE_ID" "$APPLE_APP_PASSWORD" "$APPLE_TEAM_ID"; do
+            [[ -z "$value" ]] || notary_values=$((notary_values + 1))
+          done
+          if [[ "$notary_values" -ne 0 && "$notary_values" -ne 3 ]]; then
+            echo "Set APPLE_ID, APPLE_APP_PASSWORD, and APPLE_TEAM_ID together to enable notarization." >&2
+            exit 1
+          fi
+          if [[ "$notary_values" -eq 3 && "$certificate_values" -ne 3 ]]; then
+            echo "Notarization requires the Apple distribution signing certificate secrets." >&2
+            exit 1
+          fi
+
+          if [[ "$certificate_values" -eq 3 ]]; then
+            while IFS= read -r line; do
+              line="${line#*\"}"
+              line="${line%\"*}"
+              original_keychains+=("$line")
+            done < <(security list-keychains -d user)
+            security create-keychain -p "$APPLE_CERTIFICATE_PASSWORD" "$keychain"
+            keychain_created=true
+            security set-keychain-settings -lut 21600 "$keychain"
+            security unlock-keychain -p "$APPLE_CERTIFICATE_PASSWORD" "$keychain"
+            printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "${temp_dir}/certificate.p12"
+            security import "${temp_dir}/certificate.p12" -k "$keychain" \
+              -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+            security set-key-partition-list -S apple-tool:,apple: -s \
+              -k "$APPLE_CERTIFICATE_PASSWORD" "$keychain"
+            security list-keychains -d user -s "${original_keychains[@]}" "$keychain"
+            export TOBYSHOT_SIGNING_KEYCHAIN="$keychain"
+            export TOBYSHOT_SIGNING_IDENTITY="$APPLE_SIGNING_IDENTITY"
+          else
+            export TOBYSHOT_SIGNING_IDENTITY=-
+          fi
+
+          if [[ "$notary_values" -eq 3 ]]; then
+            xcrun notarytool store-credentials tobyshot-notary \
+              --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" --keychain "$keychain"
+            export TOBYSHOT_NOTARY_KEYCHAIN_PROFILE=tobyshot-notary
+          fi
+
+          bash scripts/release.sh "$version" "$build_number"
+
+      - name: Create or update draft release
+        shell: bash
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+          release_repository="${RELEASE_REPOSITORY}"
+          if [[ "$release_repository" != "$GITHUB_REPOSITORY" && -z "$RELEASE_TOKEN" ]]; then
+            echo "RELEASE_TOKEN is required when RELEASE_REPOSITORY differs from the source repository." >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            version="$INPUT_VERSION"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          build_number="$INPUT_BUILD_NUMBER"
+          if [[ -z "$build_number" ]]; then
+            build_number="$((GITHUB_RUN_NUMBER + 2))"
+          fi
+          tag="v${version}"
+          files=("build/release/TobyShot-${version}.zip" "build/release/TobyShot-${version}.dmg" "build/release/appcast.xml")
+          if [[ -f build/release/SHA256SUMS ]]; then
+            files+=(build/release/SHA256SUMS)
+          fi
+          if gh release view "$tag" --repo "$release_repository" --json isDraft --jq .isDraft >/dev/null 2>&1; then
+            is_draft="$(gh release view "$tag" --repo "$release_repository" --json isDraft --jq .isDraft)"
+            if [[ "$is_draft" != true ]]; then
+              echo "Release $tag already exists and is published; refusing to replace its assets." >&2
+              exit 1
+            fi
+            gh release upload "$tag" "${files[@]}" --repo "$release_repository" --clobber
+          else
+            gh release create "$tag" "${files[@]}" --repo "$release_repository" \
+              --draft --title "TobyShot ${version}" \
+              --notes "TobyShot ${version} (build ${build_number})"
+          fi

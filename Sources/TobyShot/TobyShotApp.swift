@@ -14,13 +14,14 @@ struct TobyShotApp {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     private var coordinator: AppCoordinator!
     private var libraryWindow: NSWindow!
     private var settingsWindow: NSWindow?
     private var captureLauncher: CaptureLauncher?
     private var statusItem: NSStatusItem?
     private let hotKeys = HotKeyManager()
+    private let updater = AppUpdater()
     private var preferencesObserver: NSObjectProtocol?
     private var pruneTimer: Timer?
     private var screenshotRetentionDays = 0
@@ -39,11 +40,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         screenshotRetentionDays = Preferences.int("screenshotRetentionDays")
         NSApp.appearance = NSAppearance(named: .darkAqua)
         coordinator = AppCoordinator(shortcuts: hotKeys)
+        updater.captureInProgress = { [weak self] in
+            self?.coordinator.isRecording == true || self?.coordinator.isBusy == true
+        }
+        updater.start()
         hotKeys.onChange = { [weak self] in self?.refreshShortcutMenus() }
         configureMainMenu()
         createLibraryWindow()
         coordinator.showLibrary = { [weak self] in self?.showLibrary() }
-        coordinator.hideLibrary = { [weak self] in self?.libraryWindow.orderOut(nil); self?.settingsWindow?.orderOut(nil) }
+        coordinator.hideLibrary = { [weak self] in
+            self?.libraryWindow.orderOut(nil)
+            self?.settingsWindow?.orderOut(nil)
+            NSApp.setActivationPolicy(.accessory)
+        }
         coordinator.showSettings = { [weak self] in self?.showSettings() }
         coordinator.recordingChanged = { [weak self] in self?.refreshStatusItem() }
         hotKeys.onAction = { [weak self] id in Task { @MainActor in self?.handleHotKey(id) } }
@@ -112,15 +121,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func showSettings() {
         if settingsWindow == nil {
             let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 880, height: 840), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            // Keep Settings out of automatic tiling, just like the annotation editor.
+            window.setAccessibilitySubrole(.floatingWindow)
             window.title = "TobyShot Settings"
             window.titlebarAppearsTransparent = true
             window.isReleasedWhenClosed = false
-            window.contentView = NSHostingView(rootView: SettingsView(shortcuts: hotKeys).preferredColorScheme(.dark))
+            window.delegate = self
+            window.contentView = NSHostingView(rootView: SettingsView(shortcuts: hotKeys, updater: updater).preferredColorScheme(.dark))
             window.minSize = CGSize(width: 790, height: 620)
             window.center(); window.setFrameAutosaveName("TobyShotSettings")
             settingsWindow = window
         }
+        // Accessory apps leave the previous app's menu bar visible, even when a window has focus.
+        NSApp.setActivationPolicy(.regular)
         settingsWindow?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === settingsWindow else { return }
+        NSApp.setActivationPolicy(.accessory)
     }
 
     private func refreshStatusItem() {
@@ -162,6 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(.separator())
         addMenuItem(menu, "Settings…", #selector(showSettings), key: ",")
+        updater.addMenuItem(to: menu)
         addMenuItem(menu, "Quit TobyShot", #selector(quit), key: "q")
     }
 
@@ -169,6 +189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let main = NSMenu()
         let appMenu = NSMenu(); let appItem = NSMenuItem(); appItem.submenu = appMenu; main.addItem(appItem)
         addMenuItem(appMenu, "About TobyShot", #selector(about))
+        updater.addMenuItem(to: appMenu)
         addMenuItem(appMenu, "Settings…", #selector(showSettings), key: ",")
         appMenu.addItem(.separator())
         addMenuItem(appMenu, "Quit TobyShot", #selector(quit), key: "q")
@@ -279,7 +300,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let id = sender.representedObject as? String, let item = coordinator.store.items.first(where: { $0.id.uuidString == id }) { coordinator.annotate(item) }
     }
     @objc private func about() {
-        NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "TobyShot", .applicationVersion: "0.1.0", .credits: NSAttributedString(string: "Capture. Annotate. Make your point.\nBuilt for macOS. Your captures stay on your Mac.")])
+        NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "TobyShot", .applicationVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Development", .credits: NSAttributedString(string: "Capture. Annotate. Make your point.\nBuilt for macOS. Your captures stay on your Mac.")])
     }
     @objc private func quit() { NSApp.terminate(nil) }
 }
