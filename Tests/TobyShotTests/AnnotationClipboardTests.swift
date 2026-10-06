@@ -17,14 +17,14 @@ struct AnnotationClipboardTests {
         let file = try #require(clipboard?.fileURL)
         defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
         let model = makeModel()
-        clipboard?.copy(model.renderedImage())
+        clipboard?.copy { model.renderedImage() }
         model.tool = .filledRectangle
         model.begin(at: CGPoint(x: 20, y: 20))
         model.continueDrag(to: CGPoint(x: 80, y: 60))
         model.endDrag()
         let latest = model.renderedImage()
         let expected = try ImageOutput.data(latest, format: "PNG")
-        clipboard?.copy(latest)
+        clipboard?.copy { latest }
         clipboard = nil
 
         #expect(board.types?.contains(.fileURL) == (mode != "Image"))
@@ -39,11 +39,200 @@ struct AnnotationClipboardTests {
         if mode != "File" { #expect(board.data(forType: .png) == expected) }
     }
 
+    @Test(arguments: [CGSize(width: 120, height: 90), CGSize(width: 6000, height: 4000)])
+    func modelPublishesAndReplacesClipboardLazilyAcrossMainTurns(size: CGSize) async throws {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: "clipboardMode")
+        defer { defaults.set(previous, forKey: "clipboardMode") }
+        defaults.set("File & Image", forKey: "clipboardMode")
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let clipboard = AnnotationClipboard(pasteboard: board)
+        defer { try? FileManager.default.removeItem(at: clipboard.fileURL.deletingLastPathComponent()) }
+        let model = makeModel(size: size)
+        var renderCount = 0
+        model.onImageChange = { render in
+            clipboard.copy {
+                renderCount += 1
+                return render()
+            }
+        }
+
+        model.tool = .text
+        model.begin(at: CGPoint(x: 12, y: 16))
+        model.updateText("First publication")
+        await drainImageChanges()
+        #expect(renderCount == 0)
+        for character in " keeps up with typing" {
+            model.updateText(model.annotations[0].text + String(character))
+            await drainImageChanges()
+            #expect(renderCount == 0)
+        }
+        #expect(board.types?.contains(.png) == true)
+        #expect(board.types?.contains(.tiff) == true)
+        #expect(board.types?.contains(.fileURL) == true)
+        await drainImageChanges()
+        #expect(renderCount == 0)
+
+        // A later completed edit replaces the unconsumed provider.
+        model.finishTextEditing()
+        model.tool = .text
+        model.begin(at: CGPoint(x: 12, y: 16))
+        model.updateText("Newest publication")
+        await drainImageChanges()
+        #expect(renderCount == 0)
+        let png = try #require(board.data(forType: .png))
+        #expect(renderCount == 1)
+        #expect(board.data(forType: .tiff) != nil)
+        #expect(renderCount == 1)
+        #expect(png == (try ImageOutput.data(model.renderedImage(), format: "PNG")))
+    }
+
+    @Test
+    func replacingUnconsumedClipboardReleasesItsCapturedImage() throws {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: "clipboardMode")
+        defer { defaults.set(previous, forKey: "clipboardMode") }
+        defaults.set("Image", forKey: "clipboardMode")
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let clipboard = AnnotationClipboard(pasteboard: board)
+        var image: NSImage? = makeModel().image
+        let isImageReleased = { [weak image] in image == nil }
+        clipboard.copy { [snapshot = try #require(image)] in snapshot }
+        image = nil
+        #expect(!isImageReleased())
+
+        var renderCount = 0
+        clipboard.copy {
+            renderCount += 1
+            return makeModel().renderedImage()
+        }
+        #expect(isImageReleased())
+        #expect(renderCount == 0)
+        #expect(board.data(forType: .png) != nil)
+        #expect(renderCount == 1)
+    }
+
+    @Test
+    func quittingMaterializesEveryPromisedTypeBeforeTermination() throws {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: "clipboardMode")
+        defer { defaults.set(previous, forKey: "clipboardMode") }
+        defaults.set("File & Image", forKey: "clipboardMode")
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let clipboard = AnnotationClipboard(pasteboard: board)
+        defer { try? FileManager.default.removeItem(at: clipboard.fileURL.deletingLastPathComponent()) }
+        let image = makeModel().renderedImage()
+        let expected = try ImageOutput.data(image, format: "PNG")
+        var renderCount = 0
+        clipboard.copy {
+            renderCount += 1
+            return image
+        }
+        #expect(renderCount == 0)
+        #expect(!FileManager.default.fileExists(atPath: clipboard.fileURL.path))
+
+        NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: NSApplication.shared)
+        #expect(renderCount == 1)
+        #expect(try Data(contentsOf: clipboard.fileURL) == expected)
+        #expect(board.string(forType: .fileURL) == clipboard.fileURL.absoluteString)
+        #expect(board.data(forType: .png) == expected)
+        #expect(board.data(forType: .tiff) != nil)
+        #expect(renderCount == 1)
+    }
+
+    @Test
+    func fileURLMaterializesCurrentPNGOnlyWhenReadAndSharesRenderedPNG() async throws {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: "clipboardMode")
+        defer { defaults.set(previous, forKey: "clipboardMode") }
+        defaults.set("File & Image", forKey: "clipboardMode")
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let clipboard = AnnotationClipboard(pasteboard: board)
+        defer { try? FileManager.default.removeItem(at: clipboard.fileURL.deletingLastPathComponent()) }
+        var renderCount = 0
+        clipboard.copy {
+            renderCount += 1
+            return makeModel().renderedImage()
+        }
+
+        #expect(renderCount == 0)
+        #expect(board.types?.contains(.fileURL) == true)
+        #expect(!FileManager.default.fileExists(atPath: clipboard.fileURL.path))
+        #expect(board.string(forType: .fileURL) == clipboard.fileURL.absoluteString)
+        #expect(renderCount == 1)
+        let filePNG = try Data(contentsOf: clipboard.fileURL)
+        #expect(board.data(forType: .png) == filePNG)
+        #expect(renderCount == 1)
+        #expect(try ImageOutput.cgImage(#require(NSImage(data: filePNG))).width == 120)
+    }
+
+    @Test
+    func deferredPublicationRemainsReadableAfterModelAndClipboardRelease() async throws {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: "clipboardMode")
+        defer { defaults.set(previous, forKey: "clipboardMode") }
+        defaults.set("Image", forKey: "clipboardMode")
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        var model: AnnotationEditorModel? = makeModel()
+        var clipboard: AnnotationClipboard? = AnnotationClipboard(pasteboard: board)
+        let isModelReleased = { [weak model] in model == nil }
+        var renderCount = 0
+        model?.onImageChange = { render in
+            clipboard?.copy {
+                renderCount += 1
+                return render()
+            }
+        }
+        model?.tool = .text
+        model?.begin(at: CGPoint(x: 12, y: 16))
+        model?.updateText("Survives release")
+        await drainImageChanges()
+        #expect(renderCount == 0)
+        model = nil
+        clipboard = nil
+        #expect(isModelReleased())
+        #expect(board.data(forType: .png) != nil)
+        #expect(renderCount == 1)
+    }
+
+    @Test
+    func deferredEditorPublicationFreezesTextBackgroundAndSourceImage() async throws {
+        let model = makeModel()
+        var publications: [() -> NSImage] = []
+        model.onImageChange = { publications.append($0) }
+        model.tool = .text
+        model.begin(at: CGPoint(x: 12, y: 16))
+        model.updateText("Frozen text")
+        await drainImageChanges()
+        let frozen = try #require(publications.last)
+        let expectedFrozen = try ImageOutput.data(model.renderedImage(), format: "PNG")
+        model.finishTextEditing()
+        model.updateBackground(style: .lavender)
+        await drainImageChanges()
+        let withBackground = try #require(publications.last)
+        let expectedBackground = try ImageOutput.data(model.renderedImage(), format: "PNG")
+        #expect(model.beginTextEditing(try #require(model.annotations.first?.id)))
+        model.updateText("Newer text")
+        model.image = makeModel(size: CGSize(width: 90, height: 60), color: .blue).image
+
+        let deferredPNG = try ImageOutput.data(frozen(), format: "PNG")
+        let currentPNG = try ImageOutput.data(model.renderedImage(), format: "PNG")
+        #expect(deferredPNG == expectedFrozen)
+        #expect(try ImageOutput.data(withBackground(), format: "PNG") == expectedBackground)
+        #expect(deferredPNG != currentPNG)
+        #expect(publications.count >= 2)
+    }
+
     @Test
     func completedDrawingAndMovingCopyOnceWithFinalPixels() async throws {
         let model = makeModel()
         var copies: [NSImage] = []
-        model.onImageChange = { copies.append($0) }
+        model.onImageChange = { copies.append($0()) }
         model.tool = .filledRectangle
         model.begin(at: CGPoint(x: 20, y: 20))
         model.continueDrag(to: CGPoint(x: 50, y: 40))
@@ -69,7 +258,7 @@ struct AnnotationClipboardTests {
     func liveTextAndHistoryCopyTheCurrentFullImage() async throws {
         let model = makeModel()
         var copies: [NSImage] = []
-        model.onImageChange = { copies.append($0) }
+        model.onImageChange = { copies.append($0()) }
         model.tool = .text
         model.begin(at: CGPoint(x: 12, y: 16))
         model.updateText("First")
@@ -97,7 +286,7 @@ struct AnnotationClipboardTests {
     func cropAndBackgroundChangesPublishCompleteStates() async throws {
         let model = makeModel()
         var copies: [NSImage] = []
-        model.onImageChange = { copies.append($0) }
+        model.onImageChange = { copies.append($0()) }
         model.tool = .crop
         model.begin(at: CGPoint(x: 20, y: 20))
         model.continueDrag(to: CGPoint(x: 90, y: 70))
@@ -150,7 +339,7 @@ struct AnnotationClipboardTests {
     func leavingAnActiveGestureCopiesItsLastEdit() async throws {
         let model = makeModel()
         var copies: [NSImage] = []
-        model.onImageChange = { copies.append($0) }
+        model.onImageChange = { copies.append($0()) }
         model.tool = .rectangle
         model.begin(at: CGPoint(x: 20, y: 20))
         model.continueDrag(to: CGPoint(x: 70, y: 60))
@@ -173,7 +362,7 @@ struct AnnotationClipboardTests {
         let shape = EditorAnnotation(kind: .filledRectangle, start: CGPoint(x: 20, y: 20), end: CGPoint(x: 70, y: 60))
         model.annotations = [shape]
         var copies: [NSImage] = []
-        model.onImageChange = { copies.append($0) }
+        model.onImageChange = { copies.append($0()) }
         model.selectedID = shape.id
         model.color = .blue
         model.strokeWidth = 10
@@ -195,11 +384,11 @@ struct AnnotationClipboardTests {
         }
     }
 
-    private func makeModel() -> AnnotationEditorModel {
-        let context = CGContext(data: nil, width: 120, height: 90, bitsPerComponent: 8, bytesPerRow: 0,
+    private func makeModel(size: CGSize = CGSize(width: 120, height: 90), color: NSColor = .white) -> AnnotationEditorModel {
+        let context = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8, bytesPerRow: 0,
             space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-        context.setFillColor(NSColor.white.cgColor)
-        context.fill(CGRect(x: 0, y: 0, width: 120, height: 90))
-        return AnnotationEditorModel(image: NSImage(cgImage: context.makeImage()!, size: CGSize(width: 120, height: 90)), sourceURL: nil)
+        context.setFillColor(color.cgColor)
+        context.fill(CGRect(origin: .zero, size: size))
+        return AnnotationEditorModel(image: NSImage(cgImage: context.makeImage()!, size: size), sourceURL: nil)
     }
 }
