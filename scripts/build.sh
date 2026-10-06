@@ -16,7 +16,7 @@ for architecture in "${architectures[@]}"; do
     case "$architecture" in arm64|x86_64) ;; *) echo "Unsupported architecture: $architecture" >&2; exit 2 ;; esac
     swift build --sdk "$tobyshot_sdk" -c "$configuration" --arch "$architecture"
     binary_dir="$(swift build --sdk "$tobyshot_sdk" -c "$configuration" --arch "$architecture" --show-bin-path)"
-    lipo -verify_arch "$architecture" "$binary_dir/TobyShot"
+    lipo "$binary_dir/TobyShot" -verify_arch "$architecture"
     # SwiftPM can reuse one product path across architectures. Save each slice
     # before building the next one, so lipo doesn't receive the same file twice.
     slice_dir="build/slices/$configuration/$architecture"
