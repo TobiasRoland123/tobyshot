@@ -41,7 +41,7 @@ public final class AnnotationEditorWindow: NSWindowController, NSWindowDelegate 
         super.init(window: window)
         window.delegate = self
         model.windowController = self
-        model.onImageChange = { [weak self] image in self?.clipboard.copy(image) }
+        model.onImageChange = { [weak self] render in self?.clipboard.copy(render) }
         if UserDefaults.standard.bool(forKey: "editorAlwaysOnTop") {
             window.level = .floating
         }
@@ -258,7 +258,11 @@ final class AnnotationEditorModel: ObservableObject {
         didSet { updateSelectedAppearance(color: color) }
     }
     @Published var strokeWidth: CGFloat = 5 {
-        didSet { updateSelectedAppearance(width: strokeWidth) }
+        didSet {
+            let changesTextSize = tool == .text || appearanceSelection.contains { $0.kind == .text }
+            updateSelectedAppearance(width: strokeWidth)
+            if changesTextSize { defaults.set(Double(max(20, strokeWidth * 5)), forKey: "annotationTextSize") }
+        }
     }
     @Published private(set) var background: AnnotationBackground = .none {
         didSet { if background != oldValue { scheduleImageChange() } }
@@ -278,8 +282,9 @@ final class AnnotationEditorModel: ObservableObject {
     @Published var smoothDrawing = UserDefaults.standard.object(forKey: "smoothDrawing") == nil || UserDefaults.standard.bool(forKey: "smoothDrawing")
     @Published var annotationShadow = UserDefaults.standard.object(forKey: "annotationShadow") == nil || UserDefaults.standard.bool(forKey: "annotationShadow")
     let sourceURL: URL?
+    private let defaults: UserDefaults
     weak var windowController: AnnotationEditorWindow?
-    var onImageChange: ((NSImage) -> Void)?
+    var onImageChange: ((@escaping () -> NSImage) -> Void)?
     private var imageChangePending = false
     private var imageChangeScheduled = false
     private var undoStack: [EditorState] = []
@@ -300,9 +305,10 @@ final class AnnotationEditorModel: ObservableObject {
     private var backgroundEditCheckpointed = false
     private var textEditOriginalState: EditorState?
 
-    init(image: NSImage, sourceURL: URL?) {
+    init(image: NSImage, sourceURL: URL?, defaults: UserDefaults = .standard) {
         self.image = image
         self.sourceURL = sourceURL
+        self.defaults = defaults
         savedState = state()
     }
 
@@ -320,11 +326,16 @@ final class AnnotationEditorModel: ObservableObject {
     }
 
     func flushImageChange() {
-        // Export completed gestures instead of encoding an image at every mouse movement.
+        // Publish completed gestures; defer the full-resolution export until it is requested.
         guard imageChangePending, drawingAnnotationID == nil, movingOriginals.isEmpty,
               textResize == nil, arrowEdit == nil, shapeEdit == nil, !isEditingBackground else { return }
         imageChangePending = false
-        onImageChange?(renderedImage())
+        let snapshot = state()
+        onImageChange? {
+            AnnotationRenderer.render(image: snapshot.image, annotations: snapshot.annotations,
+                                      background: snapshot.background, padding: snapshot.padding,
+                                      cornerRadius: snapshot.cornerRadius)
+        }
     }
 
     var pixelSize: NSSize {
@@ -435,7 +446,13 @@ final class AnnotationEditorModel: ObservableObject {
     }
 
     var currentStrokeWidth: CGFloat {
-        appearanceSelection.first(where: { $0.kind != .redaction })?.width ?? strokeWidth
+        appearanceSelection.first(where: { $0.kind != .redaction })?.width
+            ?? (tool == .text ? rememberedTextSize.map { $0 / 5 } : nil) ?? strokeWidth
+    }
+
+    private var rememberedTextSize: CGFloat? {
+        let size = defaults.double(forKey: "annotationTextSize")
+        return size.isFinite && (8...400).contains(size) ? CGFloat(size) : nil
     }
 
     private var appearanceSelection: [EditorAnnotation] {
@@ -676,6 +693,11 @@ final class AnnotationEditorModel: ObservableObject {
     }
 
     func endDrag() {
+        if let resize = textResize,
+           let annotation = annotations.first(where: { $0.id == resize.original.id }),
+           AnnotationTextLayout.fontSize(for: annotation) != AnnotationTextLayout.fontSize(for: resize.original) {
+            defaults.set(Double(AnnotationTextLayout.fontSize(for: annotation)), forKey: "annotationTextSize")
+        }
         textResize = nil
         arrowEdit = nil
         if tool == .freehand, let id = drawingAnnotationID, let index = annotations.firstIndex(where: { $0.id == id }), annotations[index].points.last != annotations[index].end {
@@ -713,7 +735,8 @@ final class AnnotationEditorModel: ObservableObject {
     }
 
     private func make(_ kind: EditorAnnotation.Kind, at start: CGPoint, end: CGPoint, text: String = "", step: Int = 1) -> EditorAnnotation {
-        EditorAnnotation(kind: kind, start: start, end: end, color: color, width: strokeWidth, text: text, step: step, shadow: annotationShadow,
+        let textSize = kind == .text ? rememberedTextSize : nil
+        return EditorAnnotation(kind: kind, start: start, end: end, color: color, width: textSize.map { $0 / 5 } ?? strokeWidth, text: text, textSize: textSize, step: step, shadow: annotationShadow,
                          reversed: UserDefaults.standard.bool(forKey: "inverseArrow") != NSEvent.modifierFlags.contains(.option),
                          font: AnnotationFont(rawValue: Preferences.string("annotationFont")) ?? .system,
                          arrowStyle: AnnotationArrowStyle(rawValue: Preferences.string("annotationArrowStyle")) ?? .clean,

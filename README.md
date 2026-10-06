@@ -114,7 +114,7 @@ Right-click a library capture for export, OCR, pinning, Finder, and history acti
 
 After drawing, placing a numbered step, applying a crop, or finishing text entry, TobyShot switches to the pointer (Move) tool. New annotations stay selected. Tool buttons are clickable across their full area, including the space around each icon.
 
-Annotation edits automatically update the clipboard with the latest full image. This includes live text, completed drawing and resize gestures, appearance and background changes, crops, and undo/redo. Automatic copies respect **Settings → Advanced → Copy format** and do not add captures to history or show copy notifications. Selection, zoom, and tool changes leave the clipboard alone.
+Annotation edits automatically update the clipboard with the latest full image. This includes live text, completed drawing and resize gestures, appearance and background changes, crops, and undo/redo. Full-resolution rendering and image encoding happen when another app requests the clipboard contents, keeping typing responsive on large screenshots. Automatic copies respect **Settings → Advanced → Copy format** and do not add captures to history or show copy notifications. Selection, zoom, and tool changes leave the clipboard alone.
 
 The editor draws shapes and text as vector overlays so they stay crisp when zooming. It caches the screenshot preview at the display resolution and reuses pixelation patches while other objects move. Saved and copied images retain the full output resolution.
 
@@ -124,7 +124,7 @@ With the pointer (Move) tool, drag from empty canvas space to select annotations
 
 For arrows, drag either round endpoint handle to reposition the start or tip, drag the middle handle to bend the arrow, or drag the arrow itself to move it. Double-click the middle handle to straighten it. Select an existing arrow with Move to adjust it again. Curves work with every arrow style and stroke, and are preserved when moving, duplicating, cropping, copying, or exporting. Each adjustment is one undo step.
 
-Select any placed shape with Move to edit it. Drag a corner handle to resize rectangles, filled rectangles, ellipses, freehand drawings, numbered steps, redactions, or pixelation regions. Drag either endpoint to adjust a line. Numbered steps stay round. Drag the shape itself to move it. Color and size changes apply to the selected annotations; size also controls text size, numbered-step size, and pixelation strength. Redactions remain opaque black. Each resize or appearance change can be undone.
+Select any placed shape with Move to edit it. Drag a corner handle to resize rectangles, filled rectangles, ellipses, freehand drawings, numbered steps, redactions, or pixelation regions. Drag either endpoint to adjust a line. Numbered steps stay round. Drag the shape itself to move it. Color and size changes apply to the selected annotations; size also controls text size, numbered-step size, and pixelation strength. TobyShot remembers the last text size set with the size control or text corner handles for new text, including in later screenshots and after restarting; existing text keeps its own size. Redactions remain opaque black. Each resize or appearance change can be undone.
 
 ## Local files
 
