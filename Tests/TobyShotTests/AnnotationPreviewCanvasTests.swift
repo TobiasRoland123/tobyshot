@@ -11,8 +11,11 @@ struct AnnotationPreviewCanvasTests {
         let source = DemoImage.make()
         let model = AnnotationEditorModel(image: source, sourceURL: nil)
         model.zoom = zoom
+        // This checks orientation and placement. Comparing a vector shadow to a
+        // downsampled export depends on display density; shadow parity is covered
+        // separately by AnnotationPreviewTests.
         let annotation = EditorAnnotation(kind: .filledRectangle, start: CGPoint(x: 140, y: 160),
-                                          end: CGPoint(x: 220, y: 220), color: .systemRed, shadow: true)
+                                          end: CGPoint(x: 220, y: 220), color: .systemRed, shadow: false)
         model.annotations = [annotation]
         let canvas = AnnotationCanvasView(frame: CGRect(x: 0, y: 0, width: 2400, height: 1600))
         canvas.model = model
@@ -48,9 +51,9 @@ struct AnnotationPreviewCanvasTests {
                       CGPoint(x: 137, y: 190), CGPoint(x: 180, y: 157)] {
             let actual = try pixel(at: point)
             let expected = try expected(at: point)
-            #expect(abs(actual.redComponent - expected.redComponent) < 0.03)
-            #expect(abs(actual.greenComponent - expected.greenComponent) < 0.03)
-            #expect(abs(actual.blueComponent - expected.blueComponent) < 0.03)
+            #expect(abs(actual.redComponent - expected.redComponent) < 0.03, "Red at \(point), zoom \(zoom)")
+            #expect(abs(actual.greenComponent - expected.greenComponent) < 0.03, "Green at \(point), zoom \(zoom)")
+            #expect(abs(actual.blueComponent - expected.blueComponent) < 0.03, "Blue at \(point), zoom \(zoom)")
         }
     }
 }
