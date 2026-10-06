@@ -21,8 +21,6 @@ permissions:
 jobs:
   release:
     runs-on: macos-15
-    env:
-      RELEASE_REPOSITORY: ${{ vars.RELEASE_REPOSITORY || 'TobiasRoland123/tobyshot' }}
     concurrency:
       group: tobyshot-releases
       cancel-in-progress: false
@@ -32,17 +30,12 @@ jobs:
       - name: Validate public release destination
         shell: bash
         env:
-          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [[ "$RELEASE_REPOSITORY" != "$GITHUB_REPOSITORY" && -z "$RELEASE_TOKEN" ]]; then
-            echo "RELEASE_TOKEN is required when RELEASE_REPOSITORY differs from the source repository." >&2
-            exit 1
-          fi
-          visibility="$(gh api "repos/${RELEASE_REPOSITORY}" --jq .visibility)"
+          visibility="$(gh api "repos/${GITHUB_REPOSITORY}" --jq .visibility)"
           if [[ "$visibility" != public ]]; then
-            echo "${RELEASE_REPOSITORY} is ${visibility}; Sparkle's anonymous feed and release downloads require a public release repository. Configure vars.RELEASE_REPOSITORY to a public repository." >&2
+            echo "${GITHUB_REPOSITORY} is ${visibility}; make this repository public so TobyShot can download updates without a GitHub login." >&2
             exit 1
           fi
 
@@ -89,7 +82,7 @@ jobs:
           printf '%s' "$SPARKLE_PRIVATE_KEY" > "$sparkle_key"
           unset SPARKLE_PRIVATE_KEY
           export TOBYSHOT_SPARKLE_PRIVATE_KEY_FILE="$sparkle_key"
-          export TOBYSHOT_RELEASE_REPOSITORY="$RELEASE_REPOSITORY"
+          export TOBYSHOT_RELEASE_REPOSITORY="$GITHUB_REPOSITORY"
           export TOBYSHOT_DISTRIBUTION=1
 
           version="${GITHUB_REF_NAME#v}"
@@ -157,17 +150,12 @@ jobs:
       - name: Create or update draft release
         shell: bash
         env:
-          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_BUILD_NUMBER: ${{ inputs.build_number }}
         run: |
           set -euo pipefail
-          release_repository="${RELEASE_REPOSITORY}"
-          if [[ "$release_repository" != "$GITHUB_REPOSITORY" && -z "$RELEASE_TOKEN" ]]; then
-            echo "RELEASE_TOKEN is required when RELEASE_REPOSITORY differs from the source repository." >&2
-            exit 1
-          fi
+          release_repository="$GITHUB_REPOSITORY"
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             version="$INPUT_VERSION"
           else
