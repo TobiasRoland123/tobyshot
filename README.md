@@ -4,13 +4,46 @@ A native macOS capture app built with Swift, AppKit, SwiftUI, ScreenCaptureKit, 
 
 ## Install and update
 
-Download `TobyShot-<version>.dmg` from [TobyShot's GitHub Releases](https://github.com/TobiasRoland123/tobyshot/releases), open it, and drag **TobyShot** into **Applications**. Requires macOS 15 or newer; release builds support both Apple silicon and Intel. The ZIP download contains the same app.
+### Download and install
+
+Requires **macOS 15 or newer**. Release builds support both **Apple silicon and Intel**. The app is free to download from GitHub; no GitHub account or developer tools are needed to install it.
+
+1. Open [TobyShot's latest GitHub Release](https://github.com/TobiasRoland123/tobyshot/releases/latest). Under **Assets**, download `TobyShot-<version>.dmg` (for example, `TobyShot-0.2.0.dmg`). The **Source code** downloads are for development, not installation.
+2. If TobyShot is already running, finish any capture or recording and quit it before replacing the app.
+3. Open the downloaded DMG and drag **TobyShot.app** onto the **Applications** shortcut in its window. If you are upgrading, confirm replacement of the existing app.
+4. Eject the TobyShot disk image in Finder, then open **TobyShot** from **Applications**. Keep and run this installed copy rather than the copy inside the DMG.
+
+The `TobyShot-<version>.zip` asset contains the same app: unzip it and move **TobyShot.app** into **Applications**, then follow the first-launch steps below.
+
+### First launch on macOS 15 or newer
+
+The current **v0.2.0** release is **ad-hoc signed and not notarized by Apple**. macOS may therefore block its first launch because the developer cannot be verified or Apple cannot check it for malicious software. Only proceed if you trust this repository and are sure the downloaded app has not been modified.
+
+1. Try opening **Applications → TobyShot** once. If macOS blocks it with one of those verification warnings, dismiss the warning.
+2. Open **System Settings → Privacy & Security**, scroll down to **Security**, and find the message about TobyShot. Click **Open Anyway** for TobyShot.
+3. Confirm **Open** in the next warning and follow any macOS confirmation prompts. macOS saves an exception for the app so you can open it normally afterward.
+
+This follows [Apple's first-launch guidance](https://support.apple.com/en-us/102445) ([Danish version](https://support.apple.com/da-dk/102445)). The exception applies to TobyShot; keep Gatekeeper enabled. If macOS reports that the app **will damage your computer**, contains malware, or is **damaged**, stop and contact the developer instead of overriding that warning. On a managed Mac, these controls may be unavailable; contact your administrator.
+
+### Permissions and your first capture
+
+TobyShot opens its capture library and adds a menu bar icon. Closing the library leaves it running; use the menu bar icon to reopen it or quit.
+
+1. In the library, click **Check access** or **Capture area** to request screen capture access.
+2. Enable **TobyShot** under **System Settings → Privacy & Security → Screen & System Audio Recording**. This is needed for screenshots and screen recording, including optional system audio. Quit and reopen the installed app after changing access, or when macOS asks you to restart it.
+3. Click **Capture area** and drag to select a region. Use the resulting preview to copy, save, or annotate your screenshot.
+
+**Microphone** access is requested only if you enable microphone audio for a recording. Allow it under **Privacy & Security → Microphone** to include your voice, or leave microphone audio off. Opening images and using the sample annotation canvas work without screen capture permission.
+
+If capture still fails while TobyShot is enabled, its permission entry may refer to an older build. Quit the app, remove only the TobyShot entry from **Screen & System Audio Recording**, use **+** to add the current **Applications → TobyShot.app**, and reopen it. Ad-hoc signed updates may need this permission refresh.
+
+### Updates
 
 Use **Check for Updates…** in TobyShot's menu bar menu, application menu, or **Settings → About → Updates**. Automatic checks are enabled by default and can be switched off there. When an update is available, Sparkle downloads it, verifies its signature, and replaces the installed app when you approve the update and restart. Settings, exports, and capture history remain in their existing locations. Finish captures or recordings before updating; the existing quit checks also protect unsaved annotation edits.
 
 An older build without the updater needs one initial replacement: quit TobyShot and copy the new app into Applications, replacing the old app. You do not need to uninstall or delete your data. Subsequent versions can update inside the app.
 
-The public `TobiasRoland123/tobyshot` repository hosts both the source and downloadable releases. Downloads become available once the first release is published. The app fetches updates without a GitHub login and never embeds a GitHub token.
+The public `TobiasRoland123/tobyshot` repository hosts both the source and downloadable releases. The app fetches updates without a GitHub login and never embeds a GitHub token. Sparkle's update signatures are separate from Apple's Developer ID signing and notarization described above.
 
 ## Publish a release
 
@@ -55,7 +88,7 @@ This builds and opens `build/TobyShot.app`. You can also open that app directly 
 bash scripts/build.sh release
 ```
 
-The build uses a persistent self-signed code-signing identity stored in the ignored, private `.local-signing` directory so local rebuilds keep the same app identity. Set `TOBYSHOT_SIGNING_IDENTITY` to use an existing Apple signing identity. Distribution to other Macs will require Developer ID signing and notarization. The build script selects the complete macOS 26.5 SDK when the preview macOS 27 Command Line Tools are missing their SwiftUI macro plugin; `TOBYSHOT_SDK` can override the choice.
+The build uses a persistent self-signed code-signing identity stored in the ignored, private `.local-signing` directory so local rebuilds keep the same app identity. Set `TOBYSHOT_SIGNING_IDENTITY` to use an existing Apple signing identity. Distribution to other Macs without the first-launch verification warning requires Developer ID signing and notarization. The build script selects the complete macOS 26.5 SDK when the preview macOS 27 Command Line Tools are missing their SwiftUI macro plugin; `TOBYSHOT_SDK` can override the choice.
 
 The first local build creates the certificate and stops until you approve its code-signing trust. To approve that certificate for code signing in your user account, run the following from the project directory, then build again. This does not add TLS trust or change screen recording permissions. Keep `.local-signing` across rebuilds; do not commit or share its private keychain and password.
 
