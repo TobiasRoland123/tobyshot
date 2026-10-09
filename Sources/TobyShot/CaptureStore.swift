@@ -192,7 +192,7 @@ enum ImageOutput {
         return data
     }
 
-    static func prepared(_ image: NSImage, scale: CGFloat = 1, background: String? = nil, padding: CGFloat = 0) throws -> NSImage {
+    static func prepared(_ image: NSImage, scale: CGFloat = 1, background: String? = nil, padding: CGFloat = 64) throws -> NSImage {
         let source = try cgImage(image)
         let factor = Preferences.bool("retinaOneX") ? max(1, scale) : 1
         let width = max(1, Int(CGFloat(source.width) / factor)), height = max(1, Int(CGFloat(source.height) / factor))
@@ -207,7 +207,7 @@ enum ImageOutput {
         guard let rendered = ctx.makeImage() else { throw TobyError.message("Could not finish processing the capture.") }
         let result = NSImage(cgImage: rendered, size: NSSize(width: width, height: height))
         let preset = background ?? Preferences.string("backgroundPreset")
-        return preset == "None" ? result : withBackground(result, style: preset, padding: padding > 0 ? padding : 64)
+        return preset == "None" ? result : withBackground(result, style: preset, padding: padding)
     }
 
     static func withBackground(_ image: NSImage, style: String, padding: CGFloat) -> NSImage {
