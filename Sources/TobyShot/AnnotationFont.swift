@@ -34,14 +34,27 @@ enum AnnotationFont: String, CaseIterable, Identifiable {
         }
     }
 
+    static func resourceBundle(in bundle: Bundle = .main) -> Bundle? {
+        guard bundle.bundleURL.pathExtension == "app" else { return .module }
+        // Older SwiftPM accessors search beside the executable or in the build
+        // directory, but build.sh installs the resources inside the app.
+        return bundle.resourceURL
+            .map { $0.appendingPathComponent("TobyShot_TobyShot.bundle") }
+            .flatMap(Bundle.init(url:))
+    }
+
     private static let registerBundledFonts: Void = {
+        guard let bundle = resourceBundle() else {
+            NSLog("TobyShot: Missing bundled annotation fonts")
+            return
+        }
         for fontName in ["Excalifont-Regular", "Virgil"] {
-            guard let url = Bundle.module.url(
+            guard let url = bundle.url(
                 forResource: fontName,
                 withExtension: "ttf",
                 subdirectory: "Fonts"
             ) else {
-                assertionFailure("Missing bundled annotation font: \(fontName).ttf")
+                NSLog("TobyShot: Missing bundled annotation font: %@.ttf", fontName)
                 continue
             }
 
