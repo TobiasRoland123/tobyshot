@@ -17,7 +17,7 @@ The `TobyShot-<version>.zip` asset contains the same app: unzip it and move **To
 
 ### First launch on macOS 15 or newer
 
-The current **v0.2.0** release is **ad-hoc signed and not notarized by Apple**. macOS may therefore block its first launch because the developer cannot be verified or Apple cannot check it for malicious software. Only proceed if you trust this repository and are sure the downloaded app has not been modified.
+New releases use a persistent self-signed certificate for personal use and are **not notarized by Apple**. Older releases used ad-hoc signing. macOS may therefore block first launch because the developer cannot be verified or Apple cannot check the app for malicious software. Only proceed if you trust this repository and are sure the downloaded app has not been modified.
 
 1. Try opening **Applications → TobyShot** once. If macOS blocks it with one of those verification warnings, dismiss the warning.
 2. Open **System Settings → Privacy & Security**, scroll down to **Security**, and find the message about TobyShot. Click **Open Anyway** for TobyShot.
@@ -35,7 +35,7 @@ TobyShot opens its capture library and adds a menu bar icon. Closing the library
 
 **Microphone** access is requested only if you enable microphone audio for a recording. Allow it under **Privacy & Security → Microphone** to include your voice, or leave microphone audio off. Opening images and using the sample annotation canvas work without screen capture permission.
 
-If capture still fails while TobyShot is enabled, its permission entry may refer to an older build. Quit the app, remove only the TobyShot entry from **Screen & System Audio Recording**, use **+** to add the current **Applications → TobyShot.app**, and reopen it. Ad-hoc signed updates may need this permission refresh.
+If capture still fails while TobyShot is enabled, its permission entry may refer to an older build. Quit the app, remove only the TobyShot entry from **Screen & System Audio Recording**, use **+** to add the current **Applications → TobyShot.app**, and reopen it. Switching from an ad-hoc build to the persistent certificate may require this once. Subsequent updates signed with the same certificate and app identifier should retain the grant. Changing or regenerating that certificate requires a new grant.
 
 ### Updates
 
@@ -62,7 +62,15 @@ One-time setup:
    ```
 
    Store any backup privately and remove the exported file when done. Never commit or upload the key as a release asset.
-3. For normal macOS installation without Gatekeeper's unidentified-developer prompt, configure Developer ID signing and notarization using these Actions secrets: `APPLE_CERTIFICATE_P12_BASE64` (exported Developer ID Application certificate and private key), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_APP_PASSWORD` (app-specific password), and `APPLE_TEAM_ID`. Keep the same app identifier and Developer ID identity across releases to preserve macOS permissions. Without Apple credentials, CI produces an ad-hoc signed build: macOS may require **System Settings → Privacy & Security → Open Anyway** after the first launch attempt, and screen recording permission may need refreshing after updates.
+3. For free personal-use signing, reuse the existing certificate in `.local-signing` for both local builds and GitHub releases. After completing the local certificate trust setup under **Run**, authenticate `gh` with repository administration access, unlock the Mac, and run (approve the key export if macOS asks):
+
+   ```sh
+   bash scripts/setup-ci-signing.sh
+   ```
+
+   This exports only the original signing identity into a private temporary directory and sends it to GitHub Actions as the encrypted `TOBYSHOT_CERTIFICATE_P12_BASE64`, `TOBYSHOT_CERTIFICATE_PASSWORD`, and `TOBYSHOT_SIGNING_IDENTITY` secrets. The last secret pins the certificate's SHA-1 fingerprint. Temporary export files are removed on exit; private keys and passwords are never printed or committed. Set `TOBYSHOT_RELEASE_REPOSITORY=owner/repository` to configure another release repository. Back up the original `.local-signing` directory securely and keep it across rebuilds and checkouts. Restore that identity on another Mac instead of generating a replacement. CI imports and checks this exact certificate on each run; missing or incomplete signing secrets stop the release rather than producing an ad-hoc build. No paid Apple membership is needed, but Gatekeeper's first-launch warning remains.
+
+   Alternatively, for installation without that warning, configure Developer ID signing and notarization with `APPLE_CERTIFICATE_P12_BASE64`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_APP_PASSWORD`, and `APPLE_TEAM_ID`. Use either personal signing secrets or Developer ID certificate secrets, not both. Switching identities requires a new permission grant. Sparkle's update signing key is separate and must also stay the same.
 
 Once the changes are in GitHub, run **Actions → Release → Run workflow** with a version such as `0.2.0`, or push a matching version tag such as `v0.2.0`. Every release must have a higher numeric **build number** (`CFBundleVersion`) than previous releases. CI defaults to its run number plus two; if you override it, keep later builds above your override. Version numbers (`CFBundleShortVersionString`) appear in the UI. Published release assets are never replaced by CI.
 
@@ -72,7 +80,7 @@ To prepare the same files locally without publishing:
 bash scripts/release.sh 0.2.0 3
 ```
 
-Output is in `build/release/`. Local builds retain the existing self-signed development identity unless `TOBYSHOT_SIGNING_IDENTITY` is set. For a Developer ID release, also set `TOBYSHOT_DISTRIBUTION=1`; optionally set `TOBYSHOT_NOTARY_KEYCHAIN_PROFILE` to a stored `notarytool` credential profile. To sign updates with a securely stored private key file instead of the Keychain, set `TOBYSHOT_SPARKLE_PRIVATE_KEY_FILE`. Keep that file outside tracked source. `TOBYSHOT_ARCHS` can override the release default of `arm64 x86_64`.
+Output is in `build/release/`. Local builds retain the existing self-signed development identity unless `TOBYSHOT_SIGNING_IDENTITY` is set. The release script rejects ad-hoc signing. For a Developer ID release, also set `TOBYSHOT_DISTRIBUTION=1`; optionally set `TOBYSHOT_NOTARY_KEYCHAIN_PROFILE` to a stored `notarytool` credential profile. To sign updates with a securely stored private key file instead of the Keychain, set `TOBYSHOT_SPARKLE_PRIVATE_KEY_FILE`. Keep that file outside tracked source. `TOBYSHOT_ARCHS` can override the release default of `arm64 x86_64`.
 
 ## Run
 
@@ -88,7 +96,7 @@ This builds and opens `build/TobyShot.app`. You can also open that app directly 
 bash scripts/build.sh release
 ```
 
-The build uses a persistent self-signed code-signing identity stored in the ignored, private `.local-signing` directory so local rebuilds keep the same app identity. Set `TOBYSHOT_SIGNING_IDENTITY` to use an existing Apple signing identity. Distribution to other Macs without the first-launch verification warning requires Developer ID signing and notarization. The build script selects the complete macOS 26.5 SDK when the preview macOS 27 Command Line Tools are missing their SwiftUI macro plugin; `TOBYSHOT_SDK` can override the choice.
+The build uses a persistent self-signed code-signing identity stored in the ignored, private `.local-signing` directory so local rebuilds keep the same app identity. The signer must match the public certificate in that directory. Use **Publish a release** above to share this exact identity with GitHub Actions. Set `TOBYSHOT_SIGNING_IDENTITY` to use an existing Apple signing identity. Distribution to other Macs without the first-launch verification warning requires Developer ID signing and notarization. The build script selects the complete macOS 26.5 SDK when the preview macOS 27 Command Line Tools are missing their SwiftUI macro plugin; `TOBYSHOT_SDK` can override the choice.
 
 The first local build creates the certificate and stops until you approve its code-signing trust. To approve that certificate for code signing in your user account, run the following from the project directory, then build again. This does not add TLS trust or change screen recording permissions. Keep `.local-signing` across rebuilds; do not commit or share its private keychain and password.
 

@@ -46,6 +46,9 @@ jobs:
         shell: bash
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          TOBYSHOT_CERTIFICATE_P12_BASE64: ${{ secrets.TOBYSHOT_CERTIFICATE_P12_BASE64 }}
+          TOBYSHOT_CERTIFICATE_PASSWORD: ${{ secrets.TOBYSHOT_CERTIFICATE_PASSWORD }}
+          TOBYSHOT_SIGNING_IDENTITY: ${{ secrets.TOBYSHOT_SIGNING_IDENTITY }}
           APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -83,7 +86,6 @@ jobs:
           unset SPARKLE_PRIVATE_KEY
           export TOBYSHOT_SPARKLE_PRIVATE_KEY_FILE="$sparkle_key"
           export TOBYSHOT_RELEASE_REPOSITORY="$GITHUB_REPOSITORY"
-          export TOBYSHOT_DISTRIBUTION=1
 
           version="${GITHUB_REF_NAME#v}"
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
@@ -103,6 +105,27 @@ jobs:
             exit 1
           fi
 
+          personal_certificate_values=0
+          for value in "$TOBYSHOT_CERTIFICATE_P12_BASE64" "$TOBYSHOT_CERTIFICATE_PASSWORD" "$TOBYSHOT_SIGNING_IDENTITY"; do
+            [[ -z "$value" ]] || personal_certificate_values=$((personal_certificate_values + 1))
+          done
+          if [[ "$personal_certificate_values" -ne 0 && "$personal_certificate_values" -ne 3 ]]; then
+            echo "Run scripts/setup-ci-signing.sh to configure all three personal signing secrets." >&2
+            exit 1
+          fi
+          if [[ "$personal_certificate_values" -eq 0 && "$certificate_values" -eq 0 ]]; then
+            echo "Persistent code signing is required. Run scripts/setup-ci-signing.sh; ad-hoc releases invalidate screen recording permissions." >&2
+            exit 1
+          fi
+          if [[ "$personal_certificate_values" -eq 3 && "$certificate_values" -eq 3 ]]; then
+            echo "Configure either personal signing or Developer ID signing, not both." >&2
+            exit 1
+          fi
+          if [[ "$personal_certificate_values" -eq 3 && ! "$TOBYSHOT_SIGNING_IDENTITY" =~ ^[A-F0-9]{40}$ ]]; then
+            echo "TOBYSHOT_SIGNING_IDENTITY must be the original certificate's SHA-1 fingerprint. Run scripts/setup-ci-signing.sh." >&2
+            exit 1
+          fi
+
           notary_values=0
           for value in "$APPLE_ID" "$APPLE_APP_PASSWORD" "$APPLE_TEAM_ID"; do
             [[ -z "$value" ]] || notary_values=$((notary_values + 1))
@@ -116,27 +139,41 @@ jobs:
             exit 1
           fi
 
-          if [[ "$certificate_values" -eq 3 ]]; then
-            while IFS= read -r line; do
-              line="${line#*\"}"
-              line="${line%\"*}"
-              original_keychains+=("$line")
-            done < <(security list-keychains -d user)
-            security create-keychain -p "$APPLE_CERTIFICATE_PASSWORD" "$keychain"
-            keychain_created=true
-            security set-keychain-settings -lut 21600 "$keychain"
-            security unlock-keychain -p "$APPLE_CERTIFICATE_PASSWORD" "$keychain"
-            printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "${temp_dir}/certificate.p12"
-            security import "${temp_dir}/certificate.p12" -k "$keychain" \
-              -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
-            security set-key-partition-list -S apple-tool:,apple: -s \
-              -k "$APPLE_CERTIFICATE_PASSWORD" "$keychain"
-            security list-keychains -d user -s "${original_keychains[@]}" "$keychain"
-            export TOBYSHOT_SIGNING_KEYCHAIN="$keychain"
-            export TOBYSHOT_SIGNING_IDENTITY="$APPLE_SIGNING_IDENTITY"
+          if [[ "$personal_certificate_values" -eq 3 ]]; then
+            certificate_base64="$TOBYSHOT_CERTIFICATE_P12_BASE64"
+            certificate_password="$TOBYSHOT_CERTIFICATE_PASSWORD"
+            export TOBYSHOT_DISTRIBUTION=0
           else
-            export TOBYSHOT_SIGNING_IDENTITY=-
+            certificate_base64="$APPLE_CERTIFICATE_P12_BASE64"
+            certificate_password="$APPLE_CERTIFICATE_PASSWORD"
+            export TOBYSHOT_SIGNING_IDENTITY="$APPLE_SIGNING_IDENTITY"
+            export TOBYSHOT_DISTRIBUTION=1
           fi
+          while IFS= read -r line; do
+            line="${line#*\"}"
+            line="${line%\"*}"
+            original_keychains+=("$line")
+          done < <(security list-keychains -d user)
+          security create-keychain -p "$certificate_password" "$keychain"
+          keychain_created=true
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$certificate_password" "$keychain"
+          printf '%s' "$certificate_base64" | base64 --decode > "${temp_dir}/certificate.p12"
+          security import "${temp_dir}/certificate.p12" -k "$keychain" \
+            -P "$certificate_password" -T /usr/bin/codesign -T /usr/bin/security
+          if [[ "$personal_certificate_values" -eq 3 ]]; then
+            certificate_file="${temp_dir}/certificate.pem"
+            security find-certificate -c "TobyShot Local Development" -p "$keychain" > "$certificate_file"
+            fingerprint="$(openssl x509 -in "$certificate_file" -noout -fingerprint -sha1 | sed 's/.*=//; s/://g')"
+            if [[ "$fingerprint" != "$TOBYSHOT_SIGNING_IDENTITY" ]]; then
+              echo "The imported certificate does not match the persistent signing identity." >&2
+              exit 1
+            fi
+          fi
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$certificate_password" "$keychain"
+          security list-keychains -d user -s "${original_keychains[@]}" "$keychain"
+          export TOBYSHOT_SIGNING_KEYCHAIN="$keychain"
 
           if [[ "$notary_values" -eq 3 ]]; then
             xcrun notarytool store-credentials tobyshot-notary \

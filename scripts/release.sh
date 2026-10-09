@@ -41,6 +41,7 @@ export TOBYSHOT_VERSION="$version"
 export TOBYSHOT_BUILD_NUMBER="$build_number"
 export TOBYSHOT_FEED_URL="$feed_url"
 export TOBYSHOT_ARCHS="${TOBYSHOT_ARCHS:-arm64 x86_64}"
+export TOBYSHOT_REQUIRE_PERSISTENT_SIGNING=1
 
 bash scripts/build.sh release
 

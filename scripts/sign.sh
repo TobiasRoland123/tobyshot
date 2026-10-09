@@ -10,6 +10,11 @@ fi
 target="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 identifier="app.tobyshot.mac"
 
+if [[ "${TOBYSHOT_REQUIRE_PERSISTENT_SIGNING:-0}" == 1 && "${TOBYSHOT_SIGNING_IDENTITY:-}" == - ]]; then
+    echo "Release builds require a persistent signing certificate; ad-hoc signing invalidates screen recording permissions after updates." >&2
+    exit 1
+fi
+
 sign_components() {
     local signing_identity="$1"
     local signing_keychain="${2:-}"
@@ -39,11 +44,12 @@ else
     signing_dir="$(pwd)/.local-signing"
     keychain="$signing_dir/tobyshot-signing.keychain-db"
     password_file="$signing_dir/keychain-password"
+    certificate_file="$signing_dir/certificate.pem"
     label="TobyShot Local Development"
     mkdir -p "$signing_dir"
     chmod 700 "$signing_dir"
 
-    if [[ ! -e "$keychain" && ! -e "$password_file" ]]; then
+    if [[ ! -e "$keychain" && ! -e "$password_file" && ! -e "$certificate_file" ]]; then
         password="$(/usr/bin/openssl rand -hex 32)"
         umask 077
         printf '%s' "$password" > "$password_file"
@@ -72,17 +78,18 @@ else
         /usr/bin/security import "$temporary_dir/identity.p12" -k "$keychain" \
             -P "$password" -T /usr/bin/codesign >/dev/null
         /usr/bin/security set-key-partition-list -S apple-tool: -s -k "$password" "$keychain" >/dev/null
-        cp "$temporary_dir/certificate.pem" "$signing_dir/certificate.pem"
+        cp "$temporary_dir/certificate.pem" "$certificate_file"
         rm -rf "$temporary_dir"
         trap - EXIT
-    elif [[ ! -f "$keychain" || ! -f "$password_file" ]]; then
+    elif [[ ! -f "$keychain" || ! -f "$password_file" || ! -f "$certificate_file" ]]; then
         echo "Local signing setup is incomplete in $signing_dir; preserve it and inspect it before repairing." >&2
         exit 1
     fi
 
     password="$(cat "$password_file")"
     /usr/bin/security unlock-keychain -p "$password" "$keychain"
-    identity="$(/usr/bin/security find-identity -v -p codesigning "$keychain" | awk -v label="$label" '$0 ~ label { print $2; exit }')"
+    fingerprint="$(/usr/bin/openssl x509 -in "$certificate_file" -noout -fingerprint -sha1 | sed 's/.*=//; s/://g')"
+    identity="$(/usr/bin/security find-identity -v -p codesigning "$keychain" | awk -v fingerprint="$fingerprint" '$2 == fingerprint { print $2; exit }')"
     if [[ -z "$identity" ]]; then
         echo "The local certificate exists, but macOS has not trusted it for code signing." >&2
         echo "See README.md for the one-time local signing setup, or set TOBYSHOT_SIGNING_IDENTITY to an existing Apple identity." >&2
