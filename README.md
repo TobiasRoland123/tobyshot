@@ -68,6 +68,8 @@ One-time setup:
    bash scripts/setup-ci-signing.sh
    ```
 
+   If macOS asks for the signing-keychain password, use the value saved in `.local-signing/keychain-password`. This password was generated separately from your Mac login password.
+
    This exports only the original signing identity into a private temporary directory and sends it to GitHub Actions as the encrypted `TOBYSHOT_CERTIFICATE_P12_BASE64`, `TOBYSHOT_CERTIFICATE_PASSWORD`, and `TOBYSHOT_SIGNING_IDENTITY` secrets. The last secret pins the certificate's SHA-1 fingerprint. Temporary export files are removed on exit; private keys and passwords are never printed or committed. Set `TOBYSHOT_RELEASE_REPOSITORY=owner/repository` to configure another release repository. Back up the original `.local-signing` directory securely and keep it across rebuilds and checkouts. Restore that identity on another Mac instead of generating a replacement. CI imports and checks this exact certificate on each run; missing or incomplete signing secrets stop the release rather than producing an ad-hoc build. No paid Apple membership is needed, but Gatekeeper's first-launch warning remains.
 
    Alternatively, for installation without that warning, configure Developer ID signing and notarization with `APPLE_CERTIFICATE_P12_BASE64`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_APP_PASSWORD`, and `APPLE_TEAM_ID`. Use either personal signing secrets or Developer ID certificate secrets, not both. Switching identities requires a new permission grant. Sparkle's update signing key is separate and must also stay the same.

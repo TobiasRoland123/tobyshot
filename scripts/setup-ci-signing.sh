@@ -65,8 +65,11 @@ trap 'rm -rf "$temporary_dir"' EXIT
 chmod 700 "$temporary_dir"
 p12_path="$temporary_dir/tobyshot-signing.p12"
 export_password="$(/usr/bin/openssl rand -hex 32)"
-if ! /usr/bin/security export -t identities -f pkcs12 -k "$keychain" -P "$export_password" -o "$p12_path" >/dev/null 2>&1; then
+echo "If macOS asks for this signing Keychain's password, use the saved value in $password_file." >&2
+export_errors="$temporary_dir/export-errors.log"
+if ! /usr/bin/security export -t identities -f pkcs12 -k "$keychain" -P "$export_password" -o "$p12_path" >/dev/null 2>"$export_errors"; then
     echo "Could not export the TobyShot signing identity from its local Keychain." >&2
+    cat "$export_errors" >&2
     exit 1
 fi
 chmod 600 "$p12_path"
