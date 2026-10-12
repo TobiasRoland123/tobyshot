@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import Testing
 @testable import TobyShot
@@ -12,6 +13,46 @@ struct CaptureHistoryRecoveryTests {
 
     @Test func incompatibleEntryBlocksEveryMutationAndRetryRestoresTheLibrary() throws {
         try malformedHistoryBlocksEveryMutationAndRetryRestoresTheLibrary(corruption: .incompatibleEntry)
+    }
+
+    @Test func retryPublishesOneCompleteSnapshotAfterFilteringMissingFilesAndClearingThumbnails() throws {
+        Preferences.register()
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let seedStore = CaptureStore(directory: directory)
+        let prior = try seedStore.add(image: fixture(), title: "Restored capture")
+        let missing = CaptureItem(id: UUID(), filename: "missing.png", title: "Missing capture",
+                                  date: prior.date, kind: .image, width: 4, height: 3)
+        let history = historyURL(in: directory)
+        try Data("invalid history".utf8).write(to: history)
+        let blocked = CaptureStore(directory: directory)
+        #expect(blocked.historyLoadError != nil)
+        #expect(try #require(blocked.thumbnail(for: prior)).size == NSSize(width: 4, height: 3))
+        try ImageOutput.data(fixture(width: 8, height: 6), format: "PNG").write(to: blocked.url(for: prior), options: .atomic)
+        let restoredHistory = try JSONEncoder().encode([prior, missing])
+        try restoredHistory.write(to: history, options: .atomic)
+        var publications: [CaptureStore.HistoryLoadState] = []
+        let observation = blocked.$historyLoadState.dropFirst().sink { state in
+            publications.append(state)
+            // Inspect the emitted snapshot: @Published notifies before its property is set.
+            guard case let .loaded(items) = state else {
+                Issue.record("Recovery must publish a complete loaded snapshot")
+                return
+            }
+            #expect(items == [prior])
+            #expect(blocked.thumbnail(for: prior)?.size == NSSize(width: 8, height: 6))
+        }
+
+        try blocked.retryHistoryLoad()
+
+        #expect(publications.count == 1)
+        #expect(blocked.items == [prior])
+        #expect(blocked.historyLoadError == nil)
+        #expect(try Data(contentsOf: history) == restoredHistory)
+        // A retry on an already loaded store must not republish its state.
+        try blocked.retryHistoryLoad()
+        #expect(publications.count == 1)
+        withExtendedLifetime(observation) {}
     }
 
     @Test func absentAndEmptyIndexesStartAsWritableLibrariesAndMissingRetryStaysBlocked() throws {
@@ -82,18 +123,33 @@ struct CaptureHistoryRecoveryTests {
         #expect(failuresRemaining == 1)
         #expect(reopened.historyLoadError != nil)
         #expect(reopened.items.isEmpty)
+        var publications: [CaptureStore.HistoryLoadState] = []
+        let observation = reopened.$historyLoadState.dropFirst().sink { publications.append($0) }
         let failedDescription = try #require(reopened.historyLoadError?.localizedDescription)
         #expect(failedDescription.lowercased().contains("history.json"))
         #expect(throws: (any Error).self) { try reopened.add(image: fixture(), title: "Blocked during read failure") }
+        #expect(publications.isEmpty)
 
         #expect(throws: (any Error).self) { try reopened.retryHistoryLoad() }
         #expect(reopened.historyLoadError != nil)
+        #expect(reopened.items.isEmpty)
+        #expect(publications.count == 1)
+        guard case .failed = try #require(publications.first) else {
+            Issue.record("Failed reads must not publish loaded captures")
+            return
+        }
         #expect(try Data(contentsOf: historyURL(in: directory)) == persistedBytes)
         #expect(try Data(contentsOf: exported) == exportBytes)
 
         try reopened.retryHistoryLoad()
         #expect(reopened.historyLoadError == nil)
         #expect(reopened.items == [persistedPrior])
+        #expect(publications.count == 2)
+        guard case let .loaded(publishedItems) = try #require(publications.last) else {
+            Issue.record("Expected the recovered capture snapshot")
+            return
+        }
+        #expect(publishedItems == [persistedPrior])
         let inserted = try reopened.add(image: fixture(), title: "After recovery")
 
         let finalStore = CaptureStore(directory: directory)
@@ -104,6 +160,7 @@ struct CaptureHistoryRecoveryTests {
         #expect(finalStore.items[1].exports == persistedPrior.exports)
         #expect(finalStore.items[1].exportedPath == exported.path)
         #expect(try Data(contentsOf: exported) == exportBytes)
+        withExtendedLifetime(observation) {}
     }
 
     @Test(arguments: [false, true])
@@ -184,6 +241,8 @@ struct CaptureHistoryRecoveryTests {
         try videoBytes.write(to: videoSource)
         let beforeMutations = try directoryContents(in: directory)
         let priorItems = failedStore.items
+        var publications: [CaptureStore.HistoryLoadState] = []
+        let observation = failedStore.$historyLoadState.dropFirst().sink { publications.append($0) }
 
         let imageError = #expect(throws: (any Error).self) {
             try failedStore.add(image: fixture(), title: "Must not be written")
@@ -202,6 +261,13 @@ struct CaptureHistoryRecoveryTests {
         }
         expectRecoveryError(pruneError, historyURL: historyURL(in: directory))
 
+        #expect(publications.isEmpty)
+        #expect(throws: (any Error).self) { try failedStore.retryHistoryLoad() }
+        #expect(publications.count == 1)
+        guard case .failed = try #require(publications.first) else {
+            Issue.record("Invalid indexes must not publish partial loaded captures")
+            return
+        }
         #expect(failedStore.items == priorItems)
         #expect(try directoryContents(in: directory) == beforeMutations)
         #expect(try Data(contentsOf: historyURL(in: directory)) == badHistory)
@@ -216,6 +282,12 @@ struct CaptureHistoryRecoveryTests {
         try failedStore.retryHistoryLoad()
         #expect(failedStore.historyLoadError == nil)
         #expect(failedStore.items == [persistedPrior])
+        #expect(publications.count == 2)
+        guard case let .loaded(publishedItems) = try #require(publications.last) else {
+            Issue.record("Expected the recovered capture snapshot")
+            return
+        }
+        #expect(publishedItems == [persistedPrior])
         let recovered = try failedStore.add(image: fixture(), title: "New capture")
         let reopened = CaptureStore(directory: directory)
         #expect(reopened.historyLoadError == nil)
@@ -226,6 +298,7 @@ struct CaptureHistoryRecoveryTests {
         #expect(reopened.items[1].exportedPath == export.path)
         #expect(try Data(contentsOf: reopened.url(for: persistedPrior)) == captureBytes)
         #expect(try Data(contentsOf: export) == exportBytes)
+        withExtendedLifetime(observation) {}
     }
 
     private func expectRecoveryError(_ error: (any Error)?, historyURL: URL, sourceLocation: SourceLocation = #_sourceLocation) {
@@ -256,11 +329,11 @@ struct CaptureHistoryRecoveryTests {
         })
     }
 
-    private func fixture() -> NSImage {
-        let context = CGContext(data: nil, width: 4, height: 3, bitsPerComponent: 8, bytesPerRow: 0,
+    private func fixture(width: Int = 4, height: Int = 3) -> NSImage {
+        let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
             space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
         context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: 4, height: 3))
-        return NSImage(cgImage: context.makeImage()!, size: CGSize(width: 4, height: 3))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return NSImage(cgImage: context.makeImage()!, size: CGSize(width: width, height: height))
     }
 }

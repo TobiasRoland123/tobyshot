@@ -133,8 +133,8 @@ struct CaptureStoreTests {
         let priorBytes = try Data(contentsOf: historyURL(in: directory))
         let replacement = Data([7, 8, 9])
         try replacement.write(to: shared, options: .atomic)
-        var publications: [[CaptureItem]] = []
-        let observation = store.$items.dropFirst().sink { publications.append($0) }
+        var publications: [CaptureStore.HistoryLoadState] = []
+        let observation = store.$historyLoadState.dropFirst().sink { publications.append($0) }
 
         try withBlockedHistoryWrite(in: directory) {
             #expect(throws: (any Error).self) { try store.markExported(claimant, at: shared) }
@@ -150,7 +150,12 @@ struct CaptureStoreTests {
         #expect(store.items[0].exports == [refreshed])
         #expect(store.items[1].exports.isEmpty)
         #expect(store.items[1].exportedPath == nil)
-        #expect(publications == [store.items])
+        #expect(publications.count == 1)
+        guard case let .loaded(publishedItems) = try #require(publications.first) else {
+            Issue.record("Expected committed capture history")
+            return
+        }
+        #expect(publishedItems == store.items)
         #expect(CaptureStore(directory: directory).items == store.items)
         withExtendedLifetime(observation) {}
     }
@@ -163,8 +168,8 @@ struct CaptureStoreTests {
         let store = CaptureStore(directory: directory)
         let prior = try store.add(image: fixture(), title: "Prior capture")
         let priorBytes = try Data(contentsOf: historyURL(in: directory))
-        var publications: [[CaptureItem]] = []
-        let observation = store.$items.dropFirst().sink { publications.append($0) }
+        var publications: [CaptureStore.HistoryLoadState] = []
+        let observation = store.$historyLoadState.dropFirst().sink { publications.append($0) }
 
         try withBlockedHistoryWrite(in: directory) {
             #expect(throws: (any Error).self) {
@@ -191,8 +196,8 @@ struct CaptureStoreTests {
         let sourceBytes = Data([0, 1, 2, 3, 255, 10])
         try sourceBytes.write(to: source)
         let store = CaptureStore(directory: directory)
-        var publications: [[CaptureItem]] = []
-        let observation = store.$items.dropFirst().sink { publications.append($0) }
+        var publications: [CaptureStore.HistoryLoadState] = []
+        let observation = store.$historyLoadState.dropFirst().sink { publications.append($0) }
 
         try withBlockedHistoryWrite(in: directory) {
             #expect(throws: (any Error).self) {
@@ -221,8 +226,18 @@ struct CaptureStoreTests {
         let source = directory.appendingPathComponent("recording-source.mp4")
         let sourceBytes = Data([9, 8, 7, 6, 0, 255])
         try sourceBytes.write(to: source)
-        var publications: [[CaptureItem]] = []
-        let observation = store.$items.dropFirst().sink { publications.append($0) }
+        var publications: [CaptureStore.HistoryLoadState] = []
+        let observation = store.$historyLoadState.dropFirst().sink { state in
+            publications.append(state)
+            guard case let .loaded(items) = state else {
+                Issue.record("A regular commit must not change the history load status")
+                return
+            }
+            do {
+                let persisted = try JSONDecoder().decode([CaptureItem].self, from: Data(contentsOf: historyURL(in: directory)))
+                #expect(persisted == items)
+            } catch { Issue.record(error) }
+        }
 
         try withBlockedHistoryWrite(in: directory) {
             #expect(throws: (any Error).self) {
@@ -241,6 +256,12 @@ struct CaptureStoreTests {
         #expect(!FileManager.default.fileExists(atPath: source.path))
         #expect(try Data(contentsOf: store.url(for: inserted)) == sourceBytes)
         #expect(store.items == [inserted, prior])
+        #expect(publications.count == 1)
+        guard case let .loaded(publishedItems) = try #require(publications.first) else {
+            Issue.record("Expected committed recording history")
+            return
+        }
+        #expect(publishedItems == [inserted, prior])
         let reopened = CaptureStore(directory: directory)
         #expect(reopened.items == [inserted, prior])
         #expect(try Data(contentsOf: reopened.url(for: inserted)) == sourceBytes)
@@ -261,8 +282,8 @@ struct CaptureStoreTests {
         try store.markExported(item, at: existingExport)
         let persistedItem = try #require(store.items.first)
         let priorBytes = try Data(contentsOf: historyURL(in: directory))
-        var publications: [[CaptureItem]] = []
-        let observation = store.$items.dropFirst().sink { publications.append($0) }
+        var publications: [CaptureStore.HistoryLoadState] = []
+        let observation = store.$historyLoadState.dropFirst().sink { publications.append($0) }
 
         try withBlockedHistoryWrite(in: directory) {
             #expect(throws: (any Error).self) {
@@ -296,8 +317,8 @@ struct CaptureStoreTests {
         let captureURL = store.url(for: item)
         let captureBytes = try Data(contentsOf: captureURL)
         let priorBytes = try Data(contentsOf: historyURL(in: directory))
-        var publications: [[CaptureItem]] = []
-        let observation = store.$items.dropFirst().sink { publications.append($0) }
+        var publications: [CaptureStore.HistoryLoadState] = []
+        let observation = store.$historyLoadState.dropFirst().sink { publications.append($0) }
 
         try withBlockedHistoryWrite(in: directory) {
             #expect(throws: (any Error).self) {
@@ -331,13 +352,18 @@ struct CaptureStoreTests {
         let captureURL = store.url(for: item)
         try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: captureURL.path)
         defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: captureURL.path) }
-        var publications: [[CaptureItem]] = []
-        let observation = store.$items.dropFirst().sink { publications.append($0) }
+        var publications: [CaptureStore.HistoryLoadState] = []
+        let observation = store.$historyLoadState.dropFirst().sink { publications.append($0) }
 
         try store.remove(item)
 
         #expect(store.items.isEmpty)
-        #expect(publications == [[]])
+        #expect(publications.count == 1)
+        guard case let .loaded(publishedItems) = try #require(publications.first) else {
+            Issue.record("Expected committed capture history")
+            return
+        }
+        #expect(publishedItems.isEmpty)
         #expect(FileManager.default.fileExists(atPath: captureURL.path))
         #expect(CaptureStore(directory: directory).items.isEmpty)
         withExtendedLifetime(observation) {}

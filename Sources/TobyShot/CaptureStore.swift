@@ -117,18 +117,22 @@ extension CaptureItem {
 @MainActor
 final class CaptureStore: ObservableObject {
     enum HistoryLoadState {
-        case loaded
+        case loaded([CaptureItem])
         case failed(Error)
     }
 
-    @Published private(set) var items: [CaptureItem] = []
-    @Published private(set) var historyLoadState: HistoryLoadState = .loaded
+    @Published private(set) var historyLoadState: HistoryLoadState = .loaded([])
     let directory: URL
     private let indexURL: URL
     private let readHistory: (URL) throws -> Data
     private var thumbnails: [UUID: NSImage] = [:]
     // Internal operations seam lets regression tests schedule replacements at the syscalls.
     var exportDeletionOperations = CaptureExportDeletion.Operations()
+
+    var items: [CaptureItem] {
+        if case let .loaded(items) = historyLoadState { return items }
+        return []
+    }
 
     var historyLoadError: Error? {
         if case let .failed(error) = historyLoadState { return error }
@@ -163,9 +167,9 @@ final class CaptureStore: ObservableObject {
                 hasIndex = false
             }
             let loadedItems = hasIndex ? try JSONDecoder().decode([CaptureItem].self, from: readHistory(indexURL)) : []
-            items = loadedItems.filter { FileManager.default.fileExists(atPath: url(for: $0).path) }
+            let existingItems = loadedItems.filter { FileManager.default.fileExists(atPath: url(for: $0).path) }
             thumbnails.removeAll()
-            historyLoadState = .loaded
+            historyLoadState = .loaded(existingItems)
         } catch {
             let recoveryError = TobyError.message("TobyShot couldn’t load your capture library. Your existing history has been kept and library changes are paused. Restore access to the history file, or restore it from a backup, then choose Retry in the library.\n\nHistory file: \(indexURL.path)\n\n\(error.localizedDescription)")
             historyLoadState = .failed(recoveryError)
@@ -309,7 +313,7 @@ final class CaptureStore: ObservableObject {
         // The index is committed. Cleanup failures retain an extra file and must not report
         // the mutation as failed when it will be visible after reopening the store.
         if let obsoleteFile { cleanUp(obsoleteFile) }
-        items = updatedItems
+        historyLoadState = .loaded(updatedItems)
     }
 
     private func cleanUp(_ file: URL) {

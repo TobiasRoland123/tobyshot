@@ -382,8 +382,8 @@ struct CaptureRetentionTests {
         let history = directory.appendingPathComponent("history.json")
         let saved = directory.appendingPathComponent("history-saved.json")
         let priorBytes = try Data(contentsOf: history)
-        var publications: [[CaptureItem]] = []
-        let observation = store.$items.dropFirst().sink { publications.append($0) }
+        var publications: [CaptureStore.HistoryLoadState] = []
+        let observation = store.$historyLoadState.dropFirst().sink { publications.append($0) }
         try FileManager.default.moveItem(at: history, to: saved)
         try FileManager.default.createDirectory(at: history, withIntermediateDirectories: false)
 
