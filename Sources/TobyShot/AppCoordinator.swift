@@ -71,6 +71,7 @@ final class AppCoordinator: ObservableObject {
 
     func capture(_ mode: CaptureMode, delayed: Bool = false, intent: CaptureIntent = .preferences, previousArea: Bool = false) {
         guard !isBusy, !isRecording, !isCheckingPermission else { return }
+        guard checkCaptureReadiness() else { return }
         isBusy = true
         preview?.close(); hideLibrary?()
         countdownTask = Task { [self] in
@@ -107,6 +108,7 @@ final class AppCoordinator: ObservableObject {
     func toggleRecording(area: Bool = true) {
         if isRecording { stopRecording(); return }
         guard !isBusy, !isCheckingPermission else { return }
+        guard checkCaptureReadiness() else { return }
         isBusy = true; hideLibrary?(); preview?.close()
         countdownTask = Task { [self] in
             defer { isBusy = false; countdown = nil; countdownPanel?.close(); countdownPanel = nil; countdownTask = nil }
@@ -131,6 +133,13 @@ final class AppCoordinator: ObservableObject {
             } catch is CancellationError { showLibrary?() }
             catch { showLibrary?(); report(error) }
         }
+    }
+
+    private func checkCaptureReadiness() -> Bool {
+        guard store.historyLoadError != nil else { return true }
+        toast("Your capture library needs recovery. Choose Retry in the library before capturing again.")
+        showLibrary?()
+        return false
     }
 
     func stopRecording() {

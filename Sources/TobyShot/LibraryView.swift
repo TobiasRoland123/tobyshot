@@ -26,9 +26,13 @@ struct LibraryView: View {
                 topbar
                 ScrollView {
                     VStack(alignment: .leading, spacing: 28) {
-                        if store.items.isEmpty { welcome }
-                        captureActions
-                        library
+                        if let error = store.historyLoadError {
+                            historyRecovery(error)
+                        } else {
+                            if store.items.isEmpty { welcome }
+                            captureActions
+                            library
+                        }
                     }.padding(30)
                 }
                 footer
@@ -128,6 +132,27 @@ struct LibraryView: View {
         }.padding(26)
             .background(LinearGradient(colors: [Color(red: 0.11, green: 0.14, blue: 0.20), Color(red: 0.10, green: 0.11, blue: 0.14)], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 16))
             .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.055)))
+    }
+
+    private func historyRecovery(_ error: Error) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("Your capture library needs recovery", systemImage: "exclamationmark.triangle")
+                .font(.system(size: 16, weight: .semibold)).foregroundStyle(Color.orange)
+            Text(error.localizedDescription).font(.system(size: 12)).foregroundStyle(.secondary)
+                .textSelection(.enabled)
+            HStack(spacing: 12) {
+                Button("Retry") {
+                    do {
+                        try store.retryHistoryLoad()
+                        app.toast("Your capture library is ready.")
+                    } catch { app.report(error) }
+                }.buttonStyle(.borderedProminent)
+                Button("Open library folder") { NSWorkspace.shared.open(store.directory) }
+                    .buttonStyle(.bordered)
+            }
+        }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.orange.opacity(0.2)))
     }
 
     private var captureActions: some View {
@@ -236,8 +261,8 @@ struct LibraryView: View {
 
     private var footer: some View {
         HStack(spacing: 7) {
-            Circle().fill(app.isRecording ? Color.red : Color.green.opacity(0.7)).frame(width: 5, height: 5)
-            Text(app.notice ?? (app.isRecording ? "Recording · \(app.recordingTime)" : "\(store.items.count) captures · Stored on this Mac"))
+            Circle().fill(app.isRecording ? Color.red : store.historyLoadError != nil ? Color.orange : Color.green.opacity(0.7)).frame(width: 5, height: 5)
+            Text(app.notice ?? (app.isRecording ? "Recording · \(app.recordingTime)" : store.historyLoadError != nil ? "Library needs recovery" : "\(store.items.count) captures · Stored on this Mac"))
                 .font(.system(size: 10)).foregroundStyle(app.notice == nil ? Color.secondary : studioAccent)
             Spacer()
             Text("TobyShot 0.1").font(.system(size: 9)).foregroundStyle(.tertiary)
