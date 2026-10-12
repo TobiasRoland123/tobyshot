@@ -1,4 +1,6 @@
 import Foundation
+import Combine
+import Darwin
 import Testing
 @testable import TobyShot
 
@@ -48,16 +50,16 @@ struct CaptureRetentionTests {
 
     @Test func expiredRecordingHistoryKeepsItsExportedFile() throws {
         let oldRecording = capture("old-recording-forever", date: date("2090-01-01T00:00:00Z"), kind: .video)
-        let (_, directory) = try makeStore(with: [oldRecording])
+        let (store, directory) = try makeStore(with: [oldRecording])
         defer { try? FileManager.default.removeItem(at: directory) }
         let export = directory.appendingPathComponent("recording-export.mp4")
         let exportBytes = Data([3, 1, 4, 1, 5, 9])
         try exportBytes.write(to: export)
-        var itemWithExport = oldRecording
-        itemWithExport.exportedPath = export.path
-        itemWithExport.exportedPaths = [export.path]
-        try writeIndex([itemWithExport], in: directory)
+        try store.markExported(oldRecording, at: export)
+        let itemWithExport = try #require(store.items.first)
+        #expect(itemWithExport.exports == [CaptureExport(path: export.path, ownership: nil)])
         let reopened = CaptureStore(directory: directory)
+        #expect(reopened.items == [itemWithExport])
 
         try reopened.prune(now: date("2100-06-01T12:00:00Z"), screenshotDays: 0, recordingDays: 120)
 
@@ -78,13 +80,13 @@ struct CaptureRetentionTests {
         }
         let second = try #require(store.items.first)
         #expect(second.exportedPath == exports[1].path)
-        #expect(Set(second.exportedPaths ?? []) == Set(exports.map(\.path)))
+        #expect(second.exports.map(\.path) == exports.map(\.path))
 
         let legacy = capture("old-legacy-export", date: date("2090-01-01T00:00:00Z"))
         let legacyExport = directory.appendingPathComponent("legacy-export.png")
         try Data([44, 55]).write(to: legacyExport)
         var legacyWithExport = legacy
-        legacyWithExport.exportedPath = legacyExport.path
+        legacyWithExport.exports = [CaptureExport(path: legacyExport.path, ownership: nil)]
         try writeIndex([second, legacyWithExport], in: directory)
         try Data([0x54, 0x53]).write(to: directory.appendingPathComponent(legacy.filename))
         let reopened = CaptureStore(directory: directory)
@@ -128,8 +130,8 @@ struct CaptureRetentionTests {
         let export = directory.appendingPathComponent("legacy-shared.png")
         let bytes = Data([13, 21, 34])
         try bytes.write(to: export)
-        older.exportedPath = export.path
-        newer.exportedPath = export.path
+        older.exports = [CaptureExport(path: export.path, ownership: nil)]
+        newer.exports = [CaptureExport(path: export.path, ownership: nil)]
         try writeIndex([older, newer], in: directory)
         let store = CaptureStore(directory: directory)
 
@@ -241,11 +243,14 @@ struct CaptureRetentionTests {
         let bytes = Data([51, 52, 53])
         try bytes.write(to: export)
         var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as? [String: Any])
+        object.removeValue(forKey: "exports")
         object[pathKey] = pathKey == "exportedPath" ? export.path as Any : [export.path] as Any
         let legacyJSON = try JSONSerialization.data(withJSONObject: [object])
         try legacyJSON.write(to: directory.appendingPathComponent("history.json"), options: .atomic)
         let reopened = CaptureStore(directory: directory)
         #expect(reopened.items.map(\.id) == [old.id])
+        #expect(reopened.items.first?.exports == [CaptureExport(path: export.path, ownership: nil)])
+        #expect(reopened.items.first?.exportedPath == export.path)
 
         try reopened.prune(now: date("2100-06-01T12:00:00Z"), screenshotDays: 120, recordingDays: 0)
 
@@ -302,6 +307,170 @@ struct CaptureRetentionTests {
         #expect(!FileManager.default.fileExists(atPath: export.path))
     }
 
+    @Test(arguments: ["replacement", "missing"], [false, true])
+    func staleExportRetiresDurablyWhenAnotherExportIsBlocked(_ staleState: String, _ blockedFirst: Bool) throws {
+        let old = capture("stale-export-retry", date: date("2090-01-01T00:00:00Z"))
+        let (store, directory) = try makeStore(with: [old])
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let stale = directory.appendingPathComponent("stale.png")
+        let moved = directory.appendingPathComponent("moved-original.png")
+        let blocked = directory.appendingPathComponent("blocked.png")
+        let original = Data([1, 2, 3])
+        let replacement = Data([7, 8, 9])
+        try original.write(to: stale)
+        try Data([4, 5, 6]).write(to: blocked)
+        for export in blockedFirst ? [blocked, stale] : [stale, blocked] {
+            try store.markExported(old, at: export)
+        }
+        var retained = try #require(store.items.first)
+        let staleRecord = try #require(retained.exports.first { $0.path == stale.path })
+        retained.exports.removeAll { $0.path == stale.path }
+        try FileManager.default.moveItem(at: stale, to: moved)
+        if staleState == "replacement" { try replacement.write(to: stale) }
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: blocked.path)
+        defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: blocked.path) }
+
+        #expect(throws: (any Error).self) {
+            try store.prune(now: date("2100-06-01T12:00:00Z"), screenshotDays: 120, recordingDays: 0)
+        }
+
+        #expect(store.items == [retained])
+        #expect(try persistedItems(in: directory) == [retained])
+        #expect(FileManager.default.fileExists(atPath: store.url(for: old).path))
+        let reopened = CaptureStore(directory: directory)
+        #expect(reopened.items == [retained])
+        let preservedReplacement = directory.appendingPathComponent("preserved-replacement.png")
+        if staleState == "replacement" {
+            #expect(try Data(contentsOf: stale) == replacement)
+            try FileManager.default.moveItem(at: stale, to: preservedReplacement)
+        } else {
+            #expect(!FileManager.default.fileExists(atPath: stale.path))
+        }
+        // Matching evidence must never regain authority after durable retirement.
+        try FileManager.default.moveItem(at: moved, to: stale)
+        #expect(try CaptureExport.read(at: stale) == staleRecord)
+        try FileManager.default.setAttributes([.immutable: false], ofItemAtPath: blocked.path)
+
+        try reopened.prune(now: date("2100-06-01T12:00:00Z"), screenshotDays: 120, recordingDays: 0)
+
+        #expect(reopened.items.isEmpty)
+        #expect(try persistedItems(in: directory).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: blocked.path))
+        #expect(!FileManager.default.fileExists(atPath: reopened.url(for: old).path))
+        #expect(try Data(contentsOf: stale) == original)
+        if staleState == "replacement" {
+            #expect(try Data(contentsOf: preservedReplacement) == replacement)
+        }
+    }
+
+    @Test func failedRetirementWritePublishesNothingAndRetryRetiresOnlyResolvedExports() throws {
+        let old = capture("retirement-index-retry", date: date("2090-01-01T00:00:00Z"))
+        let (store, directory) = try makeStore(with: [old])
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let stale = directory.appendingPathComponent("stale.png")
+        let blocked = directory.appendingPathComponent("blocked.png")
+        try Data([1, 2, 3]).write(to: stale)
+        try Data([4, 5, 6]).write(to: blocked)
+        try store.markExported(old, at: stale)
+        try store.markExported(old, at: blocked)
+        let priorItems = store.items
+        try FileManager.default.moveItem(at: stale, to: directory.appendingPathComponent("moved-original.png"))
+        let replacement = Data([7, 8, 9])
+        try replacement.write(to: stale)
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: blocked.path)
+        defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: blocked.path) }
+        let history = directory.appendingPathComponent("history.json")
+        let saved = directory.appendingPathComponent("history-saved.json")
+        let priorBytes = try Data(contentsOf: history)
+        var publications: [[CaptureItem]] = []
+        let observation = store.$items.dropFirst().sink { publications.append($0) }
+        try FileManager.default.moveItem(at: history, to: saved)
+        try FileManager.default.createDirectory(at: history, withIntermediateDirectories: false)
+
+        #expect(throws: (any Error).self) {
+            try store.prune(now: date("2100-06-01T12:00:00Z"), screenshotDays: 120, recordingDays: 0)
+        }
+
+        #expect(publications.isEmpty)
+        #expect(store.items == priorItems)
+        #expect(try Data(contentsOf: saved) == priorBytes)
+        #expect(try Data(contentsOf: stale) == replacement)
+        try FileManager.default.removeItem(at: history)
+        try FileManager.default.moveItem(at: saved, to: history)
+        let reopened = CaptureStore(directory: directory)
+        #expect(reopened.items == priorItems)
+
+        #expect(throws: (any Error).self) {
+            try reopened.prune(now: date("2100-06-01T12:00:00Z"), screenshotDays: 120, recordingDays: 0)
+        }
+        #expect(reopened.items.first?.exports == priorItems[0].exports.filter { $0.path == blocked.path })
+        #expect(try persistedItems(in: directory) == reopened.items)
+        try FileManager.default.setAttributes([.immutable: false], ofItemAtPath: blocked.path)
+        try reopened.prune(now: date("2100-06-01T12:00:00Z"), screenshotDays: 120, recordingDays: 0)
+
+        #expect(reopened.items.isEmpty)
+        #expect(try persistedItems(in: directory).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: blocked.path))
+        #expect(try Data(contentsOf: stale) == replacement)
+        withExtendedLifetime(observation) {}
+    }
+
+    @Test(arguments: [false, true])
+    func retiringStaleExportKeepsFailedStagedDeletionDiscoverableForRetry(_ claimedByNewer: Bool) throws {
+        let old = capture("staged-export-retry", date: date("2090-01-01T00:00:00Z"))
+        var newer = capture("newer-staged-export-owner", date: date("2100-05-15T00:00:00Z"))
+        let (store, directory) = try makeStore(with: [old, newer])
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let stale = directory.appendingPathComponent("stale.png")
+        let blocked = directory.appendingPathComponent("blocked.png")
+        try Data([1, 2, 3]).write(to: stale)
+        let owned = Data([4, 5, 6])
+        try owned.write(to: blocked)
+        try store.markExported(old, at: stale)
+        try store.markExported(old, at: blocked)
+        let blockedRecord = try #require(store.items.first?.exports.last)
+        try FileManager.default.moveItem(at: stale, to: directory.appendingPathComponent("moved-original.png"))
+        try Data([7, 8, 9]).write(to: stale)
+        store.exportDeletionOperations.unlink = { descriptor, name, flags in
+            if flags == 0 { errno = EACCES; return -1 }
+            return unlinkat(descriptor, name, flags)
+        }
+
+        #expect(throws: (any Error).self) {
+            try store.prune(now: date("2100-06-01T12:00:00Z"), screenshotDays: 120, recordingDays: 0)
+        }
+
+        #expect(store.items.first?.exports == [blockedRecord])
+        #expect(try persistedItems(in: directory) == store.items)
+        #expect(!FileManager.default.fileExists(atPath: blocked.path))
+        let recovery = try #require(FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .first { $0.lastPathComponent.hasPrefix("TobyShot Export Recovery - ") })
+        #expect(try Data(contentsOf: recovery.appendingPathComponent(blocked.lastPathComponent)) == owned)
+        let journalDirectory = directory.appendingPathComponent("Export Recovery")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: journalDirectory.path).count == 1)
+        var reopened = CaptureStore(directory: directory)
+        #expect(reopened.items == store.items)
+        let replacement = Data([10, 11, 12])
+        try replacement.write(to: blocked)
+        if claimedByNewer {
+            // An older index can contain both claims while recovery is pending.
+            newer.exports = [try #require(try CaptureExport.read(at: blocked))]
+            try writeIndex([try #require(reopened.items.first), newer], in: directory)
+            reopened = CaptureStore(directory: directory)
+        }
+
+        try reopened.prune(now: date("2100-06-01T12:00:00Z"), screenshotDays: 120, recordingDays: 0)
+
+        #expect(reopened.items == [newer])
+        #expect(try persistedItems(in: directory) == [newer])
+        #expect(!FileManager.default.fileExists(atPath: reopened.url(for: old).path))
+        #expect(FileManager.default.fileExists(atPath: reopened.url(for: newer).path))
+        #expect(try Data(contentsOf: stale) == Data([7, 8, 9]))
+        #expect(try Data(contentsOf: blocked) == replacement)
+        #expect(!FileManager.default.fileExists(atPath: recovery.path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: journalDirectory.path).isEmpty)
+    }
+
     @Test func failedPruneIndexWriteRetainsCaptureAndRetryPersistsRemoval() throws {
         let old = capture("old-index-retry", date: date("2090-01-01T00:00:00Z"))
         let (store, directory) = try makeStore(with: [old])
@@ -324,6 +493,86 @@ struct CaptureRetentionTests {
         #expect(store.items.isEmpty)
         #expect(try persistedItems(in: directory).isEmpty)
         #expect(!FileManager.default.fileExists(atPath: store.url(for: old).path))
+    }
+
+    @Test(arguments: [false, true], [false, true])
+    func stagedMismatchCannotRegainOwnershipAfterFailedRestore(_ failedHistoryWrite: Bool, _ candidateMovedAway: Bool) throws {
+        let old = capture("staged-mismatch-retry", date: date("2090-01-01T00:00:00Z"))
+        let (store, directory) = try makeStore(with: [old])
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let export = directory.appendingPathComponent("export.png")
+        let original = Data([1, 2, 3])
+        try original.write(to: export)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)], ofItemAtPath: export.path)
+        try store.markExported(old, at: export)
+        let priorItems = store.items
+        let ownership = try #require(priorItems.first?.exports.first?.ownership)
+        var moves = 0
+        store.exportDeletionOperations.move = { from, name, to, destination in
+            moves += 1
+            if moves == 1 {
+                // Keep the version intact so staging disproves ownership by hash.
+                try! Data([7, 8, 9]).write(to: export)
+                try! FileManager.default.setAttributes([.modificationDate: ownership.version.modificationDate], ofItemAtPath: export.path)
+            } else if moves == 2 {
+                try! Data([10, 11, 12]).write(to: export)
+            }
+            return renameatx_np(from, name, to, destination, UInt32(RENAME_EXCL))
+        }
+        let history = directory.appendingPathComponent("history.json")
+        let saved = directory.appendingPathComponent("history-saved.json")
+        if failedHistoryWrite {
+            try FileManager.default.moveItem(at: history, to: saved)
+            try FileManager.default.createDirectory(at: history, withIntermediateDirectories: false)
+        }
+
+        #expect(throws: (any Error).self) {
+            try store.prune(now: date("2100-06-01T12:00:00Z"), screenshotDays: 120, recordingDays: 0)
+        }
+        if failedHistoryWrite {
+            #expect(store.items == priorItems)
+            try FileManager.default.removeItem(at: history)
+            try FileManager.default.moveItem(at: saved, to: history)
+        } else {
+            #expect(store.items.first?.exports == [CaptureExport(path: export.path, ownership: nil)])
+        }
+        #expect(try persistedItems(in: directory) == store.items)
+        let recovery = try #require(FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .first { $0.lastPathComponent.hasPrefix("TobyShot Export Recovery - ") })
+        let candidate = recovery.appendingPathComponent(export.lastPathComponent)
+        #expect(try Data(contentsOf: candidate) == Data([7, 8, 9]))
+        // Even fully matching bytes and metadata cannot revive disproven ownership.
+        try original.write(to: candidate)
+        try FileManager.default.setAttributes([.modificationDate: ownership.version.modificationDate], ofItemAtPath: candidate.path)
+        let matchingCandidate = try #require(try CaptureExport.read(at: candidate))
+        #expect(matchingCandidate.ownership == ownership)
+        let occupant = directory.appendingPathComponent("preserved-occupant.png")
+        if candidateMovedAway {
+            try FileManager.default.moveItem(at: export, to: occupant)
+            try FileManager.default.moveItem(at: candidate, to: export)
+        }
+        let reopened = CaptureStore(directory: directory)
+
+        if !candidateMovedAway {
+            #expect(throws: (any Error).self) {
+                try reopened.prune(now: date("2100-06-01T12:00:00Z"), screenshotDays: 120, recordingDays: 0)
+            }
+            #expect(reopened.items.first?.exports == [CaptureExport(path: export.path, ownership: nil)])
+            #expect(try persistedItems(in: directory) == reopened.items)
+            #expect(try Data(contentsOf: candidate) == original)
+            #expect(try Data(contentsOf: export) == Data([10, 11, 12]))
+            try FileManager.default.removeItem(at: export)
+        } else {
+            #expect(try Data(contentsOf: occupant) == Data([10, 11, 12]))
+        }
+
+        try reopened.prune(now: date("2100-06-01T12:00:00Z"), screenshotDays: 120, recordingDays: 0)
+
+        #expect(reopened.items.isEmpty)
+        #expect(try persistedItems(in: directory).isEmpty)
+        #expect(try Data(contentsOf: export) == original)
+        #expect(!FileManager.default.fileExists(atPath: recovery.path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.appendingPathComponent("Export Recovery").path).isEmpty)
     }
 
     private func makeStore(with items: [CaptureItem]) throws -> (CaptureStore, URL) {

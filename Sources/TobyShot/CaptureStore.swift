@@ -27,9 +27,14 @@ struct CaptureExport: Codable, Equatable {
         }
     }
 
-    var path: String
-    var version: FileVersion
-    var contentHash: Data
+    struct Ownership: Codable, Equatable {
+        let version: FileVersion
+        let contentHash: Data
+    }
+
+    let path: String
+    // Path-only legacy exports and recordings have no deletion evidence.
+    let ownership: Ownership?
 
     static func read(at url: URL, matching expectedVersion: FileVersion? = nil) throws -> CaptureExport? {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
@@ -40,7 +45,7 @@ struct CaptureExport: Codable, Equatable {
         // A change while reading cannot establish ownership of a stable file version.
         let currentAttributes = try FileManager.default.attributesOfItem(atPath: url.path)
         guard FileVersion(attributes: currentAttributes) == version else { return nil }
-        return CaptureExport(path: url.path, version: version, contentHash: contentHash)
+        return CaptureExport(path: url.path, ownership: Ownership(version: version, contentHash: contentHash))
     }
 }
 
@@ -53,16 +58,60 @@ struct CaptureItem: Identifiable, Codable, Equatable {
     var kind: Kind
     var width: Int
     var height: Int
-    var exportedPath: String?
-    var exportedPaths: [String]? = nil
-    var exportedFiles: [CaptureExport]? = nil
-    var exportPaths: [String] {
-        var paths = exportedPaths ?? []
-        if let exportedPath, !paths.contains(exportedPath) { paths.append(exportedPath) }
-        for export in exportedFiles ?? [] where !paths.contains(export.path) { paths.append(export.path) }
-        return paths
-    }
+    // Oldest export first; exporting an existing path moves it to the end.
+    var exports: [CaptureExport] = []
+    var exportedPath: String? { exports.last?.path }
     var dimensions: String { "\(width) × \(height)" }
+}
+
+extension CaptureItem {
+    private enum CodingKeys: String, CodingKey {
+        case id, filename, title, date, kind, width, height, exports
+    }
+
+    private enum LegacyCodingKeys: String, CodingKey {
+        case exportedPath, exportedPaths, exportedFiles
+    }
+
+    private struct LegacyExport: Decodable {
+        let path: String
+        let version: CaptureExport.FileVersion
+        let contentHash: Data
+    }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        filename = try values.decode(String.self, forKey: .filename)
+        title = try values.decode(String.self, forKey: .title)
+        date = try values.decode(Date.self, forKey: .date)
+        kind = try values.decode(Kind.self, forKey: .kind)
+        width = try values.decode(Int.self, forKey: .width)
+        height = try values.decode(Int.self, forKey: .height)
+        if let canonical = try values.decodeIfPresent([CaptureExport].self, forKey: .exports) {
+            exports = canonical
+            return
+        }
+
+        let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
+        let paths = try legacy.decodeIfPresent([String].self, forKey: .exportedPaths) ?? []
+        let files = try legacy.decodeIfPresent([LegacyExport].self, forKey: .exportedFiles) ?? []
+        var orderedPaths: [String] = []
+        for path in paths + files.map(\.path) where !orderedPaths.contains(path) {
+            orderedPaths.append(path)
+        }
+        // The scalar field records the last export even when legacy arrays disagree.
+        if let latest = try legacy.decodeIfPresent(String.self, forKey: .exportedPath) {
+            orderedPaths.removeAll { $0 == latest }
+            orderedPaths.append(latest)
+        }
+        exports = orderedPaths.map { path in
+            let ownership = files.last(where: { $0.path == path }).map {
+                CaptureExport.Ownership(version: $0.version, contentHash: $0.contentHash)
+            }
+            return CaptureExport(path: path, ownership: ownership)
+        }
+    }
 }
 
 @MainActor
@@ -71,6 +120,8 @@ final class CaptureStore: ObservableObject {
     let directory: URL
     private let indexURL: URL
     private var thumbnails: [UUID: NSImage] = [:]
+    // Internal operations seam lets regression tests schedule replacements at the syscalls.
+    var exportDeletionOperations = CaptureExportDeletion.Operations()
 
     init(directory: URL? = nil) {
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("TobyShot/Captures")
@@ -130,25 +181,13 @@ final class CaptureStore: ObservableObject {
         guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
         // Recording exports are kept indefinitely, so they need no deletion evidence.
         let exportedFile = item.kind == .image ? try CaptureExport.read(at: url) : nil
+        let export = exportedFile ?? CaptureExport(path: url.path, ownership: nil)
         var updatedItems = items
         // A Save As replacement belongs to the capture that most recently exported it.
-        for otherIndex in updatedItems.indices where otherIndex != index {
-            let other = updatedItems[otherIndex]
-            guard other.exportPaths.contains(url.path) else { continue }
-            updatedItems[otherIndex].exportedPaths = other.exportPaths.filter { $0 != url.path }
-            updatedItems[otherIndex].exportedFiles?.removeAll { $0.path == url.path }
-            if other.exportedPath == url.path {
-                updatedItems[otherIndex].exportedPath = updatedItems[otherIndex].exportedPaths?.last
-            }
+        for otherIndex in updatedItems.indices {
+            updatedItems[otherIndex].exports.removeAll { $0.path == url.path }
         }
-        var paths = updatedItems[index].exportPaths
-        if !paths.contains(url.path) { paths.append(url.path) }
-        updatedItems[index].exportedPaths = paths
-        updatedItems[index].exportedPath = url.path
-        var files = updatedItems[index].exportedFiles ?? []
-        files.removeAll { $0.path == url.path }
-        if let exportedFile { files.append(exportedFile) }
-        updatedItems[index].exportedFiles = files
+        updatedItems[index].exports.append(export)
         try commit(updatedItems)
     }
 
@@ -170,26 +209,46 @@ final class CaptureStore: ObservableObject {
         var firstError: Error?
         for item in expired {
             do {
+                var retryExports: [CaptureExport] = []
                 if item.kind == .image {
-                    // Legacy path-only exports cannot prove ownership and are preserved.
-                    for export in item.exportedFiles ?? [] {
-                        let path = export.path
-                        // Older indexes can contain a path shared with a newer capture.
-                        guard !items.contains(where: { !expiredIDs.contains($0.id) && $0.exportPaths.contains(path) }),
-                              FileManager.default.fileExists(atPath: path) else { continue }
-                        // Preserve replacements, edits, and nonregular files. Removing the
-                        // expired capture also retires these stale export associations.
-                        guard try CaptureExport.read(at: URL(fileURLWithPath: path), matching: export.version) == export else { continue }
-                        try FileManager.default.removeItem(atPath: path)
+                    for export in item.exports {
+                        switch pruneExport(export, expiredIDs: expiredIDs) {
+                        case .retired:
+                            break
+                        case .retry(let retryExport, let error):
+                            retryExports.append(retryExport)
+                            if firstError == nil { firstError = error }
+                        }
                     }
                 }
-                try remove(item)
+                if retryExports.isEmpty {
+                    try remove(item)
+                } else if retryExports != item.exports {
+                    // Retire resolved associations even when another export needs retry.
+                    // commit publishes the reduced metadata only after it is durable.
+                    var updatedItems = items
+                    if let index = updatedItems.firstIndex(where: { $0.id == item.id }) {
+                        updatedItems[index].exports = retryExports
+                        try commit(updatedItems)
+                    }
+                }
             } catch {
                 // Keep failed entries so the next cleanup can retry, and continue with other captures.
                 if firstError == nil { firstError = error }
             }
         }
         if let firstError { throw firstError }
+    }
+
+    private func pruneExport(_ export: CaptureExport, expiredIDs: Set<UUID>) -> CaptureExportDeletion.Outcome {
+        // Older indexes can contain a path shared with a newer capture. Resolve
+        // any staged recovery, but leave that capture's original path untouched.
+        let preservingSource = items.contains {
+            !expiredIDs.contains($0.id) && $0.exports.contains { $0.path == export.path }
+        }
+        // Success also covers unowned or missing files, after recovery is resolved.
+        return CaptureExportDeletion(directory: directory, operations: exportDeletionOperations)
+            .remove(export, preservingSource: preservingSource)
     }
 
     private func commit(_ updatedItems: [CaptureItem], creating newFile: URL? = nil, removing obsoleteFile: URL? = nil, prepare: () throws -> Void = {}) throws {
