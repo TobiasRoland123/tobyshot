@@ -67,7 +67,7 @@ struct CaptureRetentionTests {
         #expect(try Data(contentsOf: export) == exportBytes)
     }
 
-    @Test func expiredScreenshotDeletesAllExportsIncludingLegacyExportPath() throws {
+    @Test func expiredScreenshotDeletesOwnedExportsAndPreservesLegacyExportPath() throws {
         let first = capture("old-multi-export", date: date("2090-01-01T00:00:00Z"))
         let (store, directory) = try makeStore(with: [first])
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -93,9 +93,10 @@ struct CaptureRetentionTests {
 
         #expect(reopened.items.isEmpty)
         #expect(try persistedItems(in: directory).isEmpty)
-        for url in exports + [legacyExport] {
+        for url in exports {
             #expect(!FileManager.default.fileExists(atPath: url.path))
         }
+        #expect(try Data(contentsOf: legacyExport) == Data([44, 55]))
     }
 
     @Test func olderScreenshotExpiryDoesNotDeleteExportReassignedToNewerScreenshot() throws {
@@ -119,7 +120,7 @@ struct CaptureRetentionTests {
         #expect(try Data(contentsOf: export) == bytes)
     }
 
-    @Test func legacySharedExportRemainsUntilItsNewerScreenshotExpires() throws {
+    @Test func legacySharedExportRemainsAfterAllScreenshotsExpire() throws {
         var older = capture("legacy-older-owner", date: date("2090-01-01T00:00:00Z"))
         var newer = capture("legacy-newer-owner", date: date("2100-05-15T00:00:00Z"))
         let (_, directory) = try makeStore(with: [older, newer])
@@ -138,6 +139,136 @@ struct CaptureRetentionTests {
         #expect(try Data(contentsOf: export) == bytes)
         try store.prune(now: date("2100-12-01T12:00:00Z"), screenshotDays: 120, recordingDays: 0)
         #expect(store.items.isEmpty)
+        #expect(try Data(contentsOf: export) == bytes)
+    }
+
+    @Test func externallyReplacedExportIsPreservedAfterReopening() throws {
+        let old = capture("replaced-export", date: date("2090-01-01T00:00:00Z"))
+        let (store, directory) = try makeStore(with: [old])
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let export = directory.appendingPathComponent("replacement.png")
+        try Data([1, 2, 3]).write(to: export)
+        try store.markExported(old, at: export)
+        try FileManager.default.removeItem(at: export)
+        let replacement = Data([7, 8, 9])
+        try replacement.write(to: export)
+        let reopened = CaptureStore(directory: directory)
+        #expect(reopened.items.map(\.id) == [old.id])
+
+        try reopened.prune(now: date("2100-06-01T12:00:00Z"), screenshotDays: 120, recordingDays: 0)
+
+        #expect(reopened.items.isEmpty)
+        #expect(try persistedItems(in: directory).isEmpty)
+        #expect(try Data(contentsOf: export) == replacement)
+    }
+
+    @Test func identicalByteReplacementIsPreservedByFileIdentity() throws {
+        let old = capture("identical-replacement", date: date("2090-01-01T00:00:00Z"))
+        let (store, directory) = try makeStore(with: [old])
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let export = directory.appendingPathComponent("identical.png")
+        let original = directory.appendingPathComponent("original.png")
+        let bytes = Data([11, 12, 13, 14])
+        try bytes.write(to: export)
+        try store.markExported(old, at: export)
+        try FileManager.default.moveItem(at: export, to: original)
+        try bytes.write(to: export)
+        let reopened = CaptureStore(directory: directory)
+        #expect(reopened.items.map(\.id) == [old.id])
+
+        try reopened.prune(now: date("2100-06-01T12:00:00Z"), screenshotDays: 120, recordingDays: 0)
+
+        #expect(reopened.items.isEmpty)
+        #expect(try persistedItems(in: directory).isEmpty)
+        #expect(try Data(contentsOf: export) == bytes)
+        #expect(try Data(contentsOf: original) == bytes)
+    }
+
+    @Test func sameSizeInPlaceEditIsPreservedEvenWhenOriginalModificationDateIsRestored() throws {
+        let old = capture("edited-export", date: date("2090-01-01T00:00:00Z"))
+        let (store, directory) = try makeStore(with: [old])
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let export = directory.appendingPathComponent("edited.png")
+        let original = Data([21, 22, 23, 24])
+        let edited = Data([31, 32, 33, 34])
+        try original.write(to: export)
+        let modified = date("2100-01-01T00:00:00Z")
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: export.path)
+        try store.markExported(old, at: export)
+        let attributes = try FileManager.default.attributesOfItem(atPath: export.path)
+        try edited.write(to: export)
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: export.path)
+        let editedAttributes = try FileManager.default.attributesOfItem(atPath: export.path)
+        #expect(editedAttributes[.systemFileNumber] as? NSNumber == attributes[.systemFileNumber] as? NSNumber)
+        #expect(editedAttributes[.creationDate] as? Date == attributes[.creationDate] as? Date)
+        #expect(editedAttributes[.modificationDate] as? Date == modified)
+        let reopened = CaptureStore(directory: directory)
+        #expect(reopened.items.map(\.id) == [old.id])
+
+        try reopened.prune(now: date("2100-06-01T12:00:00Z"), screenshotDays: 120, recordingDays: 0)
+
+        #expect(reopened.items.isEmpty)
+        #expect(try persistedItems(in: directory).isEmpty)
+        #expect(try Data(contentsOf: export) == edited)
+    }
+
+    @Test func metadataOnlyModificationDateChangePreservesExport() throws {
+        let old = capture("metadata-export", date: date("2090-01-01T00:00:00Z"))
+        let (store, directory) = try makeStore(with: [old])
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let export = directory.appendingPathComponent("metadata.png")
+        let bytes = Data([41, 42, 43])
+        try bytes.write(to: export)
+        try store.markExported(old, at: export)
+        try FileManager.default.setAttributes(
+            [.modificationDate: date("2099-01-01T00:00:00Z")], ofItemAtPath: export.path)
+        let reopened = CaptureStore(directory: directory)
+        #expect(reopened.items.map(\.id) == [old.id])
+
+        try reopened.prune(now: date("2100-06-01T12:00:00Z"), screenshotDays: 120, recordingDays: 0)
+
+        #expect(reopened.items.isEmpty)
+        #expect(try persistedItems(in: directory).isEmpty)
+        #expect(try Data(contentsOf: export) == bytes)
+    }
+
+    @Test(arguments: ["exportedPath", "exportedPaths"])
+    func pathOnlyLegacyJSONIsDecodedAndPreserved(_ pathKey: String) throws {
+        let old = capture("path-only-legacy-\(pathKey)", date: date("2090-01-01T00:00:00Z"))
+        let (_, directory) = try makeStore(with: [old])
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let export = directory.appendingPathComponent("path-only-\(pathKey).png")
+        let bytes = Data([51, 52, 53])
+        try bytes.write(to: export)
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as? [String: Any])
+        object[pathKey] = pathKey == "exportedPath" ? export.path as Any : [export.path] as Any
+        let legacyJSON = try JSONSerialization.data(withJSONObject: [object])
+        try legacyJSON.write(to: directory.appendingPathComponent("history.json"), options: .atomic)
+        let reopened = CaptureStore(directory: directory)
+        #expect(reopened.items.map(\.id) == [old.id])
+
+        try reopened.prune(now: date("2100-06-01T12:00:00Z"), screenshotDays: 120, recordingDays: 0)
+
+        #expect(reopened.items.isEmpty)
+        #expect(try persistedItems(in: directory).isEmpty)
+        #expect(try Data(contentsOf: export) == bytes)
+    }
+
+    @Test func reexportingSameCaptureAtSamePathRefreshesEvidence() throws {
+        let old = capture("refreshed-export", date: date("2090-01-01T00:00:00Z"))
+        let (store, directory) = try makeStore(with: [old])
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let export = directory.appendingPathComponent("refreshed.png")
+        try Data([61, 62, 63]).write(to: export)
+        try store.markExported(old, at: export)
+        let latest = Data([71, 72, 73])
+        try latest.write(to: export)
+        try store.markExported(old, at: export)
+        let reopened = CaptureStore(directory: directory)
+
+        try reopened.prune(now: date("2100-06-01T12:00:00Z"), screenshotDays: 120, recordingDays: 0)
+
+        #expect(reopened.items.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: export.path))
     }
 
