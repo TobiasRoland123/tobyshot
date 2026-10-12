@@ -76,6 +76,25 @@ struct TobyShotTests {
         #expect(cg.height == 148)
     }
 
+    @Test(arguments: [
+        (CGFloat(0), 120, 100),
+        (CGFloat(24), 168, 148)
+    ])
+    func testPreparedBackgroundRespectsExplicitPadding(padding: CGFloat, width: Int, height: Int) throws {
+        let image = try ImageOutput.prepared(fixture(), background: "Midnight", padding: padding)
+        let cg = try ImageOutput.cgImage(image)
+        #expect(cg.width == width)
+        #expect(cg.height == height)
+    }
+
+    @Test
+    func testPreparedBackgroundDefaultsTo64PixelPadding() throws {
+        let image = try ImageOutput.prepared(fixture(), background: "Midnight")
+        let cg = try ImageOutput.cgImage(image)
+        #expect(cg.width == 248)
+        #expect(cg.height == 228)
+    }
+
     @Test
     func testPixelationSamplesTheSelectedRows() throws {
         let annotation = EditorAnnotation(kind: .pixelation, start: CGPoint(x: 5, y: 5), end: CGPoint(x: 45, y: 30), width: 5, shadow: false)
