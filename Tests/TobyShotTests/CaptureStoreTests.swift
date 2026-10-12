@@ -6,6 +6,155 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct CaptureStoreTests {
+    @Test func legacyExportFieldsNormalizeIntoOrderedRecordsAndWriteOnlyCanonicalState() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let latest = directory.appendingPathComponent("latest.png")
+        let fileOnly = directory.appendingPathComponent("file-only.png")
+        let pathOnly = directory.appendingPathComponent("path-only.png")
+        try Data([1, 2, 3]).write(to: latest)
+        try Data([4, 5, 6]).write(to: fileOnly)
+        let owned = try [latest, fileOnly].map { try #require(try CaptureExport.read(at: $0)) }
+        let item = CaptureItem(id: UUID(), filename: "capture.png", title: "Legacy", date: Date(),
+                               kind: .image, width: 4, height: 3)
+        var legacy = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(item)) as? [String: Any])
+        legacy.removeValue(forKey: "exports")
+        legacy["exportedPaths"] = [latest.path, pathOnly.path, latest.path]
+        legacy["exportedPath"] = latest.path
+        legacy["exportedFiles"] = try owned.map { export -> [String: Any] in
+            let record = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(export)) as? [String: Any])
+            var evidence = try #require(record["ownership"] as? [String: Any])
+            evidence["path"] = export.path
+            return evidence
+        }
+
+        let migrated = try JSONDecoder().decode(CaptureItem.self, from: JSONSerialization.data(withJSONObject: legacy))
+
+        #expect(migrated.exports == [CaptureExport(path: pathOnly.path, ownership: nil), owned[1], owned[0]])
+        #expect(migrated.exportedPath == latest.path)
+        let encoded = try JSONEncoder().encode(migrated)
+        let canonical = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(canonical["exportedPath"] == nil)
+        #expect(canonical["exportedPaths"] == nil)
+        #expect(canonical["exportedFiles"] == nil)
+        #expect(try JSONDecoder().decode(CaptureItem.self, from: encoded) == migrated)
+
+        // Once canonical records exist, stale legacy fields cannot resurrect associations.
+        var mixed = canonical
+        mixed["exportedPath"] = "/stale.png"
+        mixed["exportedPaths"] = ["/stale.png"]
+        #expect(try JSONDecoder().decode(CaptureItem.self, from: JSONSerialization.data(withJSONObject: mixed)) == migrated)
+    }
+
+    @Test func historyWithoutExportFieldsDecodesToEmptyCanonicalRecords() throws {
+        let item = CaptureItem(id: UUID(), filename: "capture.png", title: "Unexported", date: Date(),
+                               kind: .image, width: 4, height: 3)
+        var legacy = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(item)) as? [String: Any])
+        legacy.removeValue(forKey: "exports")
+
+        let decoded = try JSONDecoder().decode(CaptureItem.self, from: JSONSerialization.data(withJSONObject: legacy))
+
+        #expect(decoded == item)
+        #expect(decoded.exports.isEmpty)
+        #expect(decoded.exportedPath == nil)
+    }
+
+    @Test func reexportMovesPathToEndAndRefreshesOwnershipAcrossReopening() throws {
+        Preferences.register()
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = CaptureStore(directory: directory)
+        let item = try store.add(image: fixture())
+        let first = directory.appendingPathComponent("first.png")
+        let second = directory.appendingPathComponent("second.png")
+        try Data([1, 2, 3]).write(to: first)
+        try Data([4, 5, 6]).write(to: second)
+        try store.markExported(item, at: first)
+        try store.markExported(item, at: second)
+        let previous = try #require(store.items.first?.exports.first?.ownership)
+        #expect(store.items.first?.exportedPath == second.path)
+        try Data([7, 8, 9]).write(to: first, options: .atomic)
+
+        try store.markExported(item, at: first)
+
+        let updated = try #require(store.items.first)
+        #expect(updated.exports.map(\.path) == [second.path, first.path])
+        #expect(updated.exportedPath == first.path)
+        let refreshed = try #require(updated.exports.last?.ownership)
+        #expect(refreshed != previous)
+        #expect(refreshed.contentHash != previous.contentHash)
+        #expect(updated.exports.last == (try CaptureExport.read(at: first)))
+        #expect(CaptureStore(directory: directory).items == [updated])
+    }
+
+    @Test func reassignmentRemovesEveryOlderAssociationAndDerivesEachRemainingPath() throws {
+        Preferences.register()
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = CaptureStore(directory: directory)
+        var first = try store.add(image: fixture(), title: "First owner")
+        var second = try store.add(image: fixture(), title: "Second owner")
+        let claimant = try store.add(image: fixture(), title: "Latest owner")
+        let shared = directory.appendingPathComponent("shared.png")
+        let firstRemaining = directory.appendingPathComponent("first-remaining.png")
+        let secondRemaining = directory.appendingPathComponent("second-remaining.png")
+        try Data([1, 2, 3]).write(to: shared)
+        first.exports = [try #require(try CaptureExport.read(at: shared)), CaptureExport(path: firstRemaining.path, ownership: nil)]
+        second.exports = [CaptureExport(path: secondRemaining.path, ownership: nil), CaptureExport(path: shared.path, ownership: nil)]
+        try JSONEncoder().encode([claimant, second, first]).write(to: historyURL(in: directory), options: .atomic)
+        let reopened = CaptureStore(directory: directory)
+        try Data([7, 8, 9]).write(to: shared, options: .atomic)
+
+        try reopened.markExported(claimant, at: shared)
+
+        first.exports.removeAll { $0.path == shared.path }
+        second.exports.removeAll { $0.path == shared.path }
+        let updated = try #require(reopened.items.first)
+        let refreshed = try #require(try CaptureExport.read(at: shared))
+        #expect(reopened.items == [updated, second, first])
+        #expect(updated.exports == [refreshed])
+        #expect(updated.exportedPath == shared.path)
+        #expect(reopened.items[1].exportedPath == secondRemaining.path)
+        #expect(reopened.items[2].exportedPath == firstRemaining.path)
+        #expect(CaptureStore(directory: directory).items == reopened.items)
+    }
+
+    @Test func failedReassignmentPublishesNothingAndPreservesAllCanonicalRecordsUntilRetry() throws {
+        Preferences.register()
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = CaptureStore(directory: directory)
+        let owner = try store.add(image: fixture(), title: "Original owner")
+        let claimant = try store.add(image: fixture(), title: "New owner")
+        let shared = directory.appendingPathComponent("shared.png")
+        try Data([1, 2, 3]).write(to: shared)
+        try store.markExported(owner, at: shared)
+        let priorItems = store.items
+        let priorBytes = try Data(contentsOf: historyURL(in: directory))
+        let replacement = Data([7, 8, 9])
+        try replacement.write(to: shared, options: .atomic)
+        var publications: [[CaptureItem]] = []
+        let observation = store.$items.dropFirst().sink { publications.append($0) }
+
+        try withBlockedHistoryWrite(in: directory) {
+            #expect(throws: (any Error).self) { try store.markExported(claimant, at: shared) }
+        }
+
+        #expect(publications.isEmpty)
+        #expect(store.items == priorItems)
+        #expect(try Data(contentsOf: historyURL(in: directory)) == priorBytes)
+        #expect(CaptureStore(directory: directory).items == priorItems)
+        #expect(try Data(contentsOf: shared) == replacement)
+        try store.markExported(claimant, at: shared)
+        let refreshed = try #require(try CaptureExport.read(at: shared))
+        #expect(store.items[0].exports == [refreshed])
+        #expect(store.items[1].exports.isEmpty)
+        #expect(store.items[1].exportedPath == nil)
+        #expect(publications == [store.items])
+        #expect(CaptureStore(directory: directory).items == store.items)
+        withExtendedLifetime(observation) {}
+    }
+
     @Test func failedImageInsertionPreservesExistingHistoryAndLeavesNoOrphan() throws {
         Preferences.register()
         let directory = try temporaryDirectory()
