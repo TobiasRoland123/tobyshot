@@ -116,24 +116,65 @@ extension CaptureItem {
 
 @MainActor
 final class CaptureStore: ObservableObject {
+    enum HistoryLoadState {
+        case loaded
+        case failed(Error)
+    }
+
     @Published private(set) var items: [CaptureItem] = []
+    @Published private(set) var historyLoadState: HistoryLoadState = .loaded
     let directory: URL
     private let indexURL: URL
+    private let readHistory: (URL) throws -> Data
     private var thumbnails: [UUID: NSImage] = [:]
     // Internal operations seam lets regression tests schedule replacements at the syscalls.
     var exportDeletionOperations = CaptureExportDeletion.Operations()
 
-    init(directory: URL? = nil) {
+    var historyLoadError: Error? {
+        if case let .failed(error) = historyLoadState { return error }
+        return nil
+    }
+
+    init(directory: URL? = nil, readHistory: @escaping (URL) throws -> Data = { try Data(contentsOf: $0) }) {
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("TobyShot/Captures")
         indexURL = self.directory.appendingPathComponent("history.json")
+        self.readHistory = readHistory
         do {
-            try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
-            if FileManager.default.fileExists(atPath: indexURL.path) {
-                items = try JSONDecoder().decode([CaptureItem].self, from: Data(contentsOf: indexURL))
-                items.removeAll { !FileManager.default.fileExists(atPath: url(for: $0).path) }
-            }
+            try loadHistory(allowMissingIndex: true)
             try prune()
         } catch { NSLog("TobyShot history: %@", error.localizedDescription) }
+    }
+
+    func retryHistoryLoad() throws {
+        guard historyLoadError != nil else { return }
+        try loadHistory(allowMissingIndex: false)
+        try prune()
+    }
+
+    private func loadHistory(allowMissingIndex: Bool) throws {
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            var hasIndex = true
+            do {
+                _ = try FileManager.default.attributesOfItem(atPath: indexURL.path)
+            } catch let error as CocoaError where allowMissingIndex && error.code == .fileReadNoSuchFile {
+                // Only confirmed absence is a new library. Permission errors and unreadable
+                // existing indexes must never become writable empty history.
+                hasIndex = false
+            }
+            let loadedItems = hasIndex ? try JSONDecoder().decode([CaptureItem].self, from: readHistory(indexURL)) : []
+            items = loadedItems.filter { FileManager.default.fileExists(atPath: url(for: $0).path) }
+            thumbnails.removeAll()
+            historyLoadState = .loaded
+        } catch {
+            let recoveryError = TobyError.message("TobyShot couldn’t load your capture library. Your existing history has been kept and library changes are paused. Restore access to the history file, or restore it from a backup, then choose Retry in the library.\n\nHistory file: \(indexURL.path)\n\n\(error.localizedDescription)")
+            historyLoadState = .failed(recoveryError)
+            throw recoveryError
+        }
+    }
+
+    private func requireLoadedHistory() throws {
+        if let error = historyLoadError { throw error }
     }
 
     func url(for item: CaptureItem) -> URL { directory.appendingPathComponent(item.filename) }
@@ -155,6 +196,7 @@ final class CaptureStore: ObservableObject {
 
     @discardableResult
     func add(image: NSImage, title: String? = nil) throws -> CaptureItem {
+        try requireLoadedHistory()
         let id = UUID()
         let pixels = try ImageOutput.cgImage(image)
         let item = CaptureItem(id: id, filename: "\(id.uuidString).png", title: title ?? CaptureNaming.filename(template: Preferences.string("filenameTemplate")), date: Date(), kind: .image, width: pixels.width, height: pixels.height)
@@ -167,6 +209,7 @@ final class CaptureStore: ObservableObject {
 
     @discardableResult
     func add(video url: URL, size: CGSize) throws -> CaptureItem {
+        try requireLoadedHistory()
         let id = UUID()
         let item = CaptureItem(id: id, filename: "\(id.uuidString).mp4", title: CaptureNaming.filename(template: Preferences.string("filenameTemplate")), date: Date(), kind: .video, width: Int(size.width), height: Int(size.height))
         let file = self.url(for: item)
@@ -178,6 +221,7 @@ final class CaptureStore: ObservableObject {
     }
 
     func markExported(_ item: CaptureItem, at url: URL) throws {
+        try requireLoadedHistory()
         guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
         // Recording exports are kept indefinitely, so they need no deletion evidence.
         let exportedFile = item.kind == .image ? try CaptureExport.read(at: url) : nil
@@ -199,6 +243,7 @@ final class CaptureStore: ObservableObject {
     }
 
     func prune(now: Date = Date(), screenshotDays: Int? = nil, recordingDays: Int? = nil) throws {
+        try requireLoadedHistory()
         let imageDays = screenshotDays ?? Preferences.int("screenshotRetentionDays")
         let videoDays = recordingDays ?? Preferences.int("historyDays")
         let expired = items.filter { item in
@@ -252,6 +297,7 @@ final class CaptureStore: ObservableObject {
     }
 
     private func commit(_ updatedItems: [CaptureItem], creating newFile: URL? = nil, removing obsoleteFile: URL? = nil, prepare: () throws -> Void = {}) throws {
+        try requireLoadedHistory()
         let data = try JSONEncoder().encode(updatedItems)
         do {
             try prepare()
