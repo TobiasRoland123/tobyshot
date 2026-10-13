@@ -42,16 +42,7 @@ struct LibraryView: View {
         .preferredColorScheme(.dark)
         .frame(minWidth: 760, minHeight: 650)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in app.refreshPermission() }
-        .onDrop(of: [.fileURL, .image], isTargeted: nil) { providers in
-            guard let provider = providers.first else { return false }
-            if provider.hasItemConformingToTypeIdentifier("public.file-url") {
-                _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                    if let url { Task { @MainActor in app.openImage(at: url) } }
-                }
-                return true
-            }
-            return false
-        }
+        .onDrop(of: [.fileURL, .image], isTargeted: nil, perform: app.openDroppedImage)
     }
 
     private var sidebar: some View {

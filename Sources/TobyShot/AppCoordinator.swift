@@ -188,6 +188,15 @@ final class AppCoordinator: ObservableObject {
         guard let image = NSImage(contentsOf: url), image.isValid else { report(TobyError.message("TobyShot couldn't open this image.")); return }
         openEditor(image, source: url)
     }
+    func openDroppedImage(_ providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+        return ImageDropImporter.load(from: provider) { [weak self] result in
+            switch result {
+            case .success(let imported): self?.openEditor(imported.image, source: imported.sourceURL)
+            case .failure(let error): self?.report(error)
+            }
+        }
+    }
     func pasteImage() {
         if let editor = lastSavedEditor, lastSavedClipboardChangeCount == NSPasteboard.general.changeCount {
             if !editors.contains(where: { $0 === editor }) { editors.append(editor) }
