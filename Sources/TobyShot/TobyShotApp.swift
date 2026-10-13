@@ -72,7 +72,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         pruneTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.pruneCaptureHistory() }
         }
-        showLibrary()
         if !hotKeys.issues.isEmpty { coordinator.toast("Some shortcuts are already in use. Customize them in Settings → Shortcuts.") }
         if CommandLine.arguments.contains("--demo") { coordinator.openDemo() }
         if CommandLine.arguments.contains("--settings") { showSettings() }
