@@ -45,7 +45,16 @@ enum CaptureNaming {
             .replacingOccurrences(of: "{time}", with: time)
             .components(separatedBy: CharacterSet(charactersIn: "/:\\").union(.controlCharacters)).joined(separator: "-")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let name = String((result.isEmpty ? "TobyShot \(day) at \(time)" : result).prefix(180))
+        // Bound encoded length while leaving room for export extensions and collision suffixes.
+        var name = ""
+        var byteCount = 0
+        for character in result {
+            let bytes = character.utf8.count
+            guard byteCount + bytes <= 180 else { break }
+            name.append(character)
+            byteCount += bytes
+        }
+        if name.isEmpty { name = "TobyShot \(day) at \(time)" }
         return name + (retina ? "@2x" : "")
     }
 
