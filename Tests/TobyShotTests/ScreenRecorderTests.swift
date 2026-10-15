@@ -9,6 +9,60 @@ struct ScreenRecorderTests {
     enum StaleEvent: CaseIterable { case success, outputFailure, streamFailure }
 
     @Test(arguments: StaleEvent.allCases)
+    func completionStartedRetrySurvivesEarlierSessionEvents(event: StaleEvent) async throws {
+        let recorder = ScreenRecorder()
+        let retryResult = CompletionProbe()
+        let retry = try makeSession(recorder: recorder, size: CGSize(width: 640, height: 360), completion: retryResult.append)
+        defer { retry.removeFile() }
+        let retryContents = try Data(contentsOf: retry.file)
+        let oldResult = CompletionProbe()
+        var retryStart: Task<Void, Error>?
+        let old = try makeSession(recorder: recorder, stopSuspended: true) { result in
+            oldResult.append(result)
+            retryStart = Task { try await recorder.start(session: retry.session) }
+        }
+        defer { old.removeFile() }
+        try await recorder.start(session: old.session)
+
+        switch event {
+        case .success: recorder.recordingOutputDidFinishRecording(old.output)
+        case .outputFailure: recorder.recordingOutput(old.output, didFailWithError: testError(11))
+        case .streamFailure: recorder.stream(old.stream, didStopWithError: testError(11))
+        }
+        try await oldResult.waitForCount(1)
+        try await #require(retryStart).value
+
+        if event != .success { try await old.stream.waitForStopCount(1) }
+        recorder.recordingOutputDidFinishRecording(old.output)
+        recorder.recordingOutput(old.output, didFailWithError: testError(12))
+        recorder.stream(old.stream, didStopWithError: testError(12))
+        if event != .success {
+            old.stream.resumeStop()
+            try await waitForFile(old.file, toExist: false)
+        }
+        await drainCallbacks()
+
+        #expect(oldResult.results.count == 1)
+        #expect(old.stream.stopCallCount == (event == .success ? 0 : 1))
+        #expect(retryResult.results.isEmpty)
+        #expect(retry.stream.stopCallCount == 0)
+        #expect(recorder.size == retry.size)
+        #expect(try Data(contentsOf: retry.file) == retryContents)
+        if event == .success {
+            #expect(try #require(try? oldResult.results[0].get()) == old.file)
+            #expect(FileManager.default.fileExists(atPath: old.file.path))
+        } else {
+            #expect(isError(oldResult.results[0], code: 11))
+        }
+
+        recorder.recordingOutputDidFinishRecording(retry.output)
+        try await retryResult.waitForCount(1)
+        #expect(retryResult.results.count == 1)
+        #expect(try #require(try? retryResult.results[0].get()) == retry.file)
+        #expect(try Data(contentsOf: retry.file) == retryContents)
+    }
+
+    @Test(arguments: StaleEvent.allCases)
     func callbacksFromFinishedSessionCannotAffectTheActiveSession(event: StaleEvent) async throws {
         let recorder = ScreenRecorder()
         let oldResult = CompletionProbe()
