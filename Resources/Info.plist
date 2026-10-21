@@ -21,6 +21,7 @@
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSScreenCaptureUsageDescription</key><string>TobyShot captures the screen or window you choose, so you can annotate and save it.</string>
     <key>NSMicrophoneUsageDescription</key><string>TobyShot records your microphone when you enable microphone audio for a screen recording.</string>
+    <key>NSDocumentsFolderUsageDescription</key><string>TobyShot saves your screenshots and recordings in Documents → Captures unless you choose another folder.</string>
     <key>CFBundleDocumentTypes</key><array><dict>
         <key>CFBundleTypeName</key><string>Image</string>
         <key>CFBundleTypeRole</key><string>Editor</string>

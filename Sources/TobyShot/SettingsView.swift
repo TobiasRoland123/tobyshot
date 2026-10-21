@@ -5,11 +5,13 @@ import ServiceManagement
 struct SettingsView: View {
     @ObservedObject var shortcuts: HotKeyManager
     @ObservedObject var updater: AppUpdater
+    let navigation: SettingsNavigation
+    let openSetup: () -> Void
     @AppStorage("showMenuBar") private var showMenuBar = true
     @AppStorage("hideDesktopIcons") private var hideDesktopIcons = true
     @AppStorage("playSounds") private var playSounds = true
     @AppStorage("shutterSound") private var shutterSound = "Tink"
-    @AppStorage("exportPath") private var exportPath = "~/Pictures/TobyShot"
+    @AppStorage("exportPath") private var exportPath = "~/Documents/Captures"
 
     @AppStorage("afterScreenshotOverlay") private var afterScreenshotOverlay = true
     @AppStorage("afterScreenshotCopy") private var afterScreenshotCopy = true
@@ -71,6 +73,7 @@ struct SettingsView: View {
     @AppStorage("pinnedBorder") private var pinnedBorder = true
 
     @AppStorage("wallpaperStyle") private var wallpaperStyle = "Midnight"
+    @AppStorage(SetupAssistant.completedKey) private var setupCompleted = false
 
     @State private var selection: SettingsSection = .general
     @State private var loginEnabled = SMAppService.mainApp.status == .enabled
@@ -89,6 +92,10 @@ struct SettingsView: View {
         .preferredColorScheme(.dark)
         .tint(accent)
         .onAppear(perform: refreshLoginStatus)
+        .onReceive(navigation.$requestedSection.compactMap { $0 }) { section in
+            selection = section
+            navigation.requestedSection = nil
+        }
         .alert("Couldn’t update Login Items", isPresented: Binding(
             get: { loginError != nil },
             set: { if !$0 { loginError = nil } }
@@ -186,6 +193,20 @@ struct SettingsView: View {
                 ToggleRow("Launch at login", isOn: $loginEnabled, detail: "Starts TobyShot when you sign in.")
                     .onChange(of: loginEnabled) { _, enabled in updateLoginItem(enabled) }
                 ToggleRow("Show menu bar icon", isOn: $showMenuBar)
+            }
+            group("Setup") {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Screenshot setup").font(.system(size: 13))
+                        Text(setupCompleted
+                             ? "Complete. Open it again to recheck shortcuts, screen access, and where captures are saved."
+                             : "Not finished. Turn off conflicting macOS shortcuts, allow screen access, and choose where to save captures.")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Button("Open Setup…", action: openSetup).controlSize(.small)
+                }
+                .padding(.vertical, 8)
             }
             group("Capture") {
                 ToggleRow("Hide desktop icons while capturing", isOn: $hideDesktopIcons,
@@ -522,16 +543,8 @@ struct SettingsView: View {
     }
 
     private func chooseExportFolder() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose Export Location"
-        panel.prompt = "Choose"
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = URL(fileURLWithPath: expandedExportPath, isDirectory: true)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        exportPath = url.path.hasPrefix(home + "/") ? "~" + url.path.dropFirst(home.count) : url.path
+        guard let url = ExportLocation.choose(startingAt: URL(fileURLWithPath: expandedExportPath, isDirectory: true)) else { return }
+        exportPath = ExportLocation.storedPath(for: url)
     }
 
     private func refreshLoginStatus() {
@@ -556,7 +569,12 @@ struct SettingsView: View {
     }
 }
 
-private enum SettingsSection: String, CaseIterable, Identifiable {
+/// Lets other windows open Settings on a specific page.
+final class SettingsNavigation: ObservableObject {
+    @Published var requestedSection: SettingsSection?
+}
+
+enum SettingsSection: String, CaseIterable, Identifiable {
     case general, shortcuts, quickAccess, wallpaper, screenshots, recording, annotate, cloud, advanced, about
 
     static let primary: [SettingsSection] = [.general, .shortcuts, .quickAccess, .wallpaper, .screenshots, .recording, .annotate, .cloud, .advanced]

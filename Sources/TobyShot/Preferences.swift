@@ -5,7 +5,7 @@ enum Preferences {
     static func register() {
         defaults.register(defaults: [
             "showMenuBar": true, "hideDesktopIcons": true, "playSounds": true, "shutterSound": "Tink",
-            "exportPath": FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Pictures/TobyShot").path,
+            "exportPath": ExportLocation.defaultPath,
             "afterScreenshotOverlay": true, "afterScreenshotCopy": true, "afterScreenshotSave": true,
             "afterScreenshotAnnotate": false, "afterScreenshotPin": false,
             "afterRecordingOverlay": true, "afterRecordingCopy": true, "afterRecordingSave": true, "afterRecordingOpen": false,
@@ -31,6 +31,40 @@ enum Preferences {
     static func int(_ key: String) -> Int { defaults.integer(forKey: key) }
     static func double(_ key: String) -> Double { defaults.double(forKey: key) }
     static var exportDirectory: URL { URL(fileURLWithPath: (string("exportPath") as NSString).expandingTildeInPath, isDirectory: true) }
+}
+
+/// The folder where TobyShot saves screenshots and recordings.
+enum ExportLocation {
+    static var defaultPath: String { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/Captures").path }
+    static var legacyPath: String { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Pictures/TobyShot").path }
+
+    /// Earlier versions saved to ~/Pictures/TobyShot by default. Keep that folder for people who already use it.
+    static func preserveLegacyDefault(in defaults: UserDefaults, domain: String?,
+                                      legacyFolderExists: Bool = FileManager.default.fileExists(atPath: legacyPath)) {
+        guard let domain, defaults.persistentDomain(forName: domain)?["exportPath"] == nil, legacyFolderExists else { return }
+        defaults.set(legacyPath, forKey: "exportPath")
+    }
+
+    /// Folders inside the home directory are stored with a tilde.
+    static func storedPath(for url: URL) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return url.path.hasPrefix(home + "/") ? "~" + url.path.dropFirst(home.count) : url.path
+    }
+
+    @MainActor
+    static func choose(startingAt directory: URL) -> URL? {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Export Location"
+        panel.message = "Choose where TobyShot saves your screenshots and recordings."
+        panel.prompt = "Choose"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = directory
+        NSApp.activate(ignoringOtherApps: true)
+        return panel.runModal() == .OK ? panel.url : nil
+    }
 }
 
 enum CaptureNaming {

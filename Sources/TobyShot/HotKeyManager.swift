@@ -64,6 +64,8 @@ final class CarbonHotKeyBackend: HotKeyBackend {
 final class HotKeyManager: ObservableObject {
     @Published private(set) var bindings: [ShortcutAction: ShortcutBinding]
     @Published private(set) var issues: [ShortcutAction: String] = [:]
+    /// Actions whose binding is taken by an enabled macOS shortcut, refreshed by `register()`.
+    @Published private(set) var systemConflicts: Set<ShortcutAction> = []
     @Published private(set) var isRecordingShortcut = false
     var onAction: ((UInt32) -> Void)?
     var onChange: (() -> Void)?
@@ -84,13 +86,17 @@ final class HotKeyManager: ObservableObject {
         guard !isRecordingShortcut else { return }
         unregisterAll()
         issues = [:]
+        systemConflicts = []
         let system = backend.systemShortcuts()
         var used: [ShortcutBinding: ShortcutAction] = [:]
         for action in ShortcutAction.allCases {
             guard let binding = bindings[action] else { continue }
             if let message = binding.validationMessage(for: action) { issues[action] = message }
             else if let other = used[binding] { issues[action] = "Already assigned to \(other.title)." }
-            else if action.scope == .global && system.contains(binding) { issues[action] = Self.systemConflict }
+            else if action.scope == .global && system.contains(binding) {
+                issues[action] = Self.systemConflict
+                systemConflicts.insert(action)
+            }
             else if action.scope == .global {
                 let status = backend.register(binding, for: action)
                 if status != noErr { issues[action] = Self.registrationMessage(status) }
@@ -130,6 +136,7 @@ final class HotKeyManager: ObservableObject {
         } else { backend.unregister(action) }
         bindings[action] = binding
         issues[action] = nil
+        systemConflicts.remove(action)
         preferences.save(binding, for: action)
         if !isRecordingShortcut && !issues.isEmpty { register() }
         else { onChange?() }
