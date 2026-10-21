@@ -16,8 +16,12 @@ struct TobyShotApp {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     private var coordinator: AppCoordinator!
+    private var setup: SetupAssistant!
     private var libraryWindow: NSWindow!
     private var settingsWindow: NSWindow?
+    private var setupWindow: NSWindow?
+    private let settingsNavigation = SettingsNavigation()
+    private var relaunchAfterQuit = false
     private var captureLauncher: CaptureLauncher?
     private var statusItem: NSStatusItem?
     private let hotKeys = HotKeyManager()
@@ -36,10 +40,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        ExportLocation.preserveLegacyDefault(in: .standard, domain: Bundle.main.bundleIdentifier)
         Preferences.register()
         screenshotRetentionDays = Preferences.int("screenshotRetentionDays")
         NSApp.appearance = NSAppearance(named: .darkAqua)
         coordinator = AppCoordinator(shortcuts: hotKeys)
+        setup = SetupAssistant(shortcuts: hotKeys, advisoryAccess: { ScreenCaptureService.hasPermission },
+                               verifyAccess: { [weak self] in try await self?.coordinator.verifyScreenPermission() ?? false })
+        coordinator.screenshotCaptured = { [weak self] in self?.setup.screenshotCaptured() }
         updater.captureInProgress = { [weak self] in
             self?.coordinator.isRecording == true || self?.coordinator.isBusy == true
         }
@@ -75,6 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if !hotKeys.issues.isEmpty { coordinator.toast("Some shortcuts are already in use. Customize them in Settings → Shortcuts.") }
         if CommandLine.arguments.contains("--demo") { coordinator.openDemo() }
         if CommandLine.arguments.contains("--settings") { showSettings() }
+        if CommandLine.arguments.contains("--setup") || setup.shouldShowOnLaunch { showSetup() }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -103,6 +112,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         return .terminateCancel
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        guard relaunchAfterQuit else { return }
+        // Wait for this process to exit so macOS applies new screen access to the next launch.
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "while /bin/kill -0 \"$1\" 2>/dev/null; do /bin/sleep 0.2; done; /usr/bin/open \"$2\" --args --setup",
+                             "sh", String(ProcessInfo.processInfo.processIdentifier), Bundle.main.bundleURL.path]
+        try? process.run()
+    }
+
+    private func quitAndReopen() {
+        relaunchAfterQuit = true
+        NSApp.terminate(nil)
+        // Reached only when quitting was cancelled, for example to finish a recording.
+        relaunchAfterQuit = false
+    }
+
     private func createLibraryWindow() {
         libraryWindow = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1140, height: 800), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         libraryWindow.title = "TobyShot"
@@ -126,7 +152,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             window.titlebarAppearsTransparent = true
             window.isReleasedWhenClosed = false
             window.delegate = self
-            window.contentView = NSHostingView(rootView: SettingsView(shortcuts: hotKeys, updater: updater).preferredColorScheme(.dark))
+            window.contentView = NSHostingView(rootView: SettingsView(shortcuts: hotKeys, updater: updater, navigation: settingsNavigation,
+                                                                      openSetup: { [weak self] in self?.showSetup() }).preferredColorScheme(.dark))
             window.minSize = CGSize(width: 790, height: 620)
             window.center(); window.setFrameAutosaveName("TobyShotSettings")
             settingsWindow = window
@@ -136,9 +163,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         settingsWindow?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
 
+    private func openSettings(to section: SettingsSection) {
+        settingsNavigation.requestedSection = section
+        showSettings()
+    }
+
+    @objc func showSetup() {
+        if setupWindow == nil {
+            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 600, height: 800), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            window.setAccessibilitySubrole(.floatingWindow)
+            window.title = "Set Up TobyShot"
+            window.titlebarAppearsTransparent = true
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            window.contentView = NSHostingView(rootView: SetupView(
+                setup: setup, app: coordinator,
+                openShortcutSettings: { [weak self] in self?.openSettings(to: .shortcuts) },
+                quitAndReopen: { [weak self] in self?.quitAndReopen() },
+                close: { [weak window] in window?.close() }))
+            window.minSize = CGSize(width: 580, height: 560)
+            window.center()
+            setupWindow = window
+        }
+        if setupWindow?.isVisible != true { setup.begin() }
+        NSApp.setActivationPolicy(.regular)
+        setupWindow?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+    }
+
     func windowWillClose(_ notification: Notification) {
-        guard (notification.object as? NSWindow) === settingsWindow else { return }
-        NSApp.setActivationPolicy(.accessory)
+        guard let window = notification.object as? NSWindow, window === settingsWindow || window === setupWindow else { return }
+        // Closing setup without finishing counts as Skip for Now.
+        if window === setupWindow { setup.skip() }
+        let otherVisible = [settingsWindow, setupWindow].contains { $0 != nil && $0 !== window && $0?.isVisible == true }
+        if !otherVisible { NSApp.setActivationPolicy(.accessory) }
     }
 
     private func refreshStatusItem() {
@@ -179,6 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             let parent = NSMenuItem(title: "Recent Captures", action: nil, keyEquivalent: ""); parent.submenu = recent; menu.addItem(parent)
         }
         menu.addItem(.separator())
+        if !setup.isComplete { addMenuItem(menu, "Finish Setup…", #selector(showSetup)) }
         addMenuItem(menu, "Settings…", #selector(showSettings), key: ",")
         updater.addMenuItem(to: menu)
         addMenuItem(menu, "Quit TobyShot", #selector(quit), key: "q")

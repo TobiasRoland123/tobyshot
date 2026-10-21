@@ -14,9 +14,20 @@ A free macOS app for screenshots, screen recordings, annotations, and text recog
 
 These steps follow [Apple's guidance](https://support.apple.com/en-us/102445). Keep Gatekeeper enabled. If the warning says the app is damaged, contains malware, or will damage your computer, stop and contact the developer.
 
+### Finish setup
+
+On first launch, TobyShot opens a short setup checklist. Its default shortcuts (⌘⇧3, ⌘⇧4, and ⌘⇧5) match the built-in macOS screenshot shortcuts, which take priority until you turn them off. Setup lists only the shortcuts that conflict, including customized ones, and checks again when you come back from System Settings.
+
+1. Turn off the listed shortcuts in **System Settings → Keyboard → Keyboard Shortcuts → Screenshots**, or choose different TobyShot shortcuts.
+2. Allow screen capture as described below.
+3. Choose the folder where TobyShot saves your screenshots and recordings, or keep `~/Documents/Captures`. macOS may ask you to allow TobyShot to access your Documents folder.
+4. Take a test screenshot, then click **Finish Setup**.
+
+You can skip setup and reopen it later from **Settings → General → Setup**.
+
 ### Allow screen capture
 
-1. Click **Check access** or **Capture area** in TobyShot.
+1. Click **Allow Access** in setup, or **Check access** or **Capture area** in TobyShot.
 2. Enable **TobyShot** in **System Settings → Privacy & Security → Screen & System Audio Recording**, then quit and reopen the app.
 3. Click **Capture area** and drag to select a region.
 
@@ -31,7 +42,7 @@ If capture still fails, quit TobyShot, remove only its entry from **Screen & Sys
 - Record your screen with optional system audio and microphone.
 - Recognize text, browse local capture history, and customize shortcuts.
 
-Exports go to `~/Pictures/TobyShot` by default. Closing the library keeps TobyShot running in the menu bar.
+Exports go to `~/Documents/Captures` by default. If you used an earlier version that saved to `~/Pictures/TobyShot`, TobyShot keeps using that folder until you choose another one. Closing the library keeps TobyShot running in the menu bar.
 
 ## Updates
 

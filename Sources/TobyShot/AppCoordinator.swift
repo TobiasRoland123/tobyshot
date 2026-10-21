@@ -28,6 +28,7 @@ final class AppCoordinator: ObservableObject {
     var showSettings: (() -> Void)?
     var hideLibrary: (() -> Void)?
     var recordingChanged: (() -> Void)?
+    var screenshotCaptured: (() -> Void)?
     private let captureService = ScreenCaptureService()
     private let recorder = ScreenRecorder()
     private var editors: [AnnotationEditorWindow] = []
@@ -51,15 +52,28 @@ final class AppCoordinator: ObservableObject {
     func refreshPermission() { screenPermission = verifiedScreenPermission ?? ScreenCaptureService.hasPermission }
     func requestPermission() {
         guard !isBusy, !isRecording, !isCheckingPermission else { return }
-        isCheckingPermission = true
         Task {
-            defer { isCheckingPermission = false }
             do {
-                try await captureService.checkPermission()
-                confirmScreenPermission()
-                toast("Screen access is ready. Choose a capture above.")
+                if try await verifyScreenPermission() { toast("Screen access is ready. Choose a capture above.") }
             } catch { report(error) }
         }
+    }
+    /// Confirms access through ScreenCaptureKit, which also shows the macOS prompt the first time.
+    /// Returns false without checking while a capture or another check is running.
+    func verifyScreenPermission() async throws -> Bool {
+        guard !isBusy, !isRecording, !isCheckingPermission else { return false }
+        isCheckingPermission = true
+        defer { isCheckingPermission = false }
+        do { try await captureService.checkPermission() }
+        catch {
+            if ScreenCaptureService.isPermissionError(error) {
+                verifiedScreenPermission = false
+                screenPermission = false
+            }
+            throw error
+        }
+        confirmScreenPermission()
+        return true
     }
     private func confirmScreenPermission() {
         verifiedScreenPermission = true
@@ -87,6 +101,7 @@ final class AppCoordinator: ObservableObject {
                 let image = try ImageOutput.prepared(result.image, scale: result.scale, background: background, padding: CGFloat(Preferences.double("windowPadding")))
                 let item = try store.add(image: image)
                 playShutter()
+                screenshotCaptured?()
                 switch intent {
                 case .preferences:
                     if Preferences.bool("afterScreenshotSave") { _ = try export(item, ask: Preferences.bool("askFilename"), retina: result.scale > 1 && !Preferences.bool("retinaOneX")) }
