@@ -13,7 +13,7 @@ struct ShortcutTests {
 
     private var custom: ShortcutBinding { ShortcutBinding(keyCode: UInt32(kVK_ANSI_K), modifiers: UInt32(cmdKey | shiftKey | optionKey)) }
 
-    @Test func defaultsMatchCleanShot() {
+    @Test func defaultsMatchTobyShot() {
         let (defaults, name) = isolatedDefaults()
         defer { defaults.removePersistentDomain(forName: name) }
         let bindings = ShortcutPreferences(defaults: defaults).load()
