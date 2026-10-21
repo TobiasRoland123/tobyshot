@@ -75,6 +75,8 @@ struct AnnotationTextSizePreferenceTests {
         #expect(defaults.double(forKey: preferenceKey) == 60)
         model.finishTextEditing()
 
+        // Drawing tools stay active; size changes apply to selected annotations with Select.
+        model.tool = .select
         model.selectedID = first.id
         model.strokeWidth = 8
         #expect(AnnotationTextLayout.fontSize(for: try #require(model.annotations.first)) == 40)

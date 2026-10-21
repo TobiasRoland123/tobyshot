@@ -20,7 +20,7 @@ struct AnnotationCanvasTextTests {
         #expect(editor.frame.width > 40)
         #expect(canvas.textView(editor, doCommandBy: #selector(NSResponder.insertNewline(_:))))
         #expect(model.editingTextID == nil)
-        #expect(model.tool == .select)
+        #expect(model.tool == .text)
         #expect(canvas.subviews.isEmpty)
         model.undo()
         #expect(model.annotations.isEmpty)

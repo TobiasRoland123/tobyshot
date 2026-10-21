@@ -100,7 +100,7 @@ struct AnnotationDrawingConstraintTests {
         let finished = try #require(model.annotations.first)
         expectPoint(finished.end, equals: expected)
         #expect(finished.id == initial.id)
-        #expect(model.tool == .select)
+        #expect(model.tool == tool)
         canvas.flagsChanged(with: flags([], window: window))
         #expect(model.annotations == [finished])
         #expect(model.annotations.count == 1)

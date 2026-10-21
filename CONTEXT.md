@@ -33,6 +33,9 @@ The visible border of an outlined shape, such as an unfilled rectangle or ellips
 **Empty interior**:
 The unfilled area enclosed by an annotation outline, excluding any other annotations within it. It is distinct from the outline and editing handles.
 
+**Editing target**:
+Where a gesture starts on an existing annotation: an editing handle, or a visible stroke, outline, or filled area within a small tolerance. With any drawing tool active, a gesture that starts on an editing target edits that annotation; one that starts on empty canvas or an empty interior creates a new annotation. Handles take priority, and the choice holds for the whole gesture.
+
 ## Example dialogue
 
 Developer: "When you say the arrow is selected, do you mean the Arrow tool or an annotation?"

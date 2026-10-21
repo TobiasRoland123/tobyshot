@@ -18,7 +18,7 @@ struct AnnotationCanvasRepresentable: NSViewRepresentable {
         if let canvas = view.documentView as? AnnotationCanvasView {
             canvas.model = model
             canvas.synchronizeTextEditor()
-            canvas.window?.invalidateCursorRects(for: canvas)
+            canvas.refreshPointerFeedback()
         }
         view.needsLayout = true
     }
@@ -37,6 +37,27 @@ final class AnnotationScrollView: NSScrollView {
     }
 }
 
+/// An editing handle that the pointer can drag without first switching to Select.
+struct AnnotationEditHandle: Equatable {
+    enum Kind: Equatable {
+        case arrow(AnnotationArrowHandle)
+        case shape(AnnotationShapeHandle)
+        case text(AnnotationResizeCorner)
+    }
+    let annotationID: UUID
+    let kind: Kind
+    let rect: CGRect
+}
+
+/// The operation a gesture starting under the pointer performs. Hover feedback and
+/// mouse-down use the same target so the cursor matches what a drag does.
+enum AnnotationPointerTarget: Equatable {
+    case handle(AnnotationEditHandle)
+    case move(UUID)
+    case editText(UUID)
+    case canvas
+}
+
 final class AnnotationCanvasView: NSView, NSTextViewDelegate {
     weak var model: AnnotationEditorModel? { didSet { needsDisplay = true; needsLayout = true } }
     private var displayedImageRect: CGRect = .zero
@@ -44,9 +65,12 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
     private var imageScale: CGFloat = 1
     private var dragStart: CGPoint?
     private var lastDrawingPoint: CGPoint?
+    private var clampsDragToImage = false
     private var resizingText = false
     private var editingArrow = false
     private var editingShape = false
+    private(set) var hoveredAnnotationID: UUID?
+    private var pointerTrackingArea: NSTrackingArea?
     private var textEditor: AnnotationTextView?
     private var textEditorID: UUID?
     private var settledCanvasBounds: CGRect?
@@ -83,18 +107,17 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
             let outline = NSBezierPath(roundedRect: selection, xRadius: 4, yRadius: 4)
             outline.lineWidth = 1; outline.setLineDash([4, 3], count: 2, phase: 0); outline.stroke()
         }
-        for rect in textResizeHandles().map(\.rect) + shapeHandles().map(\.rect) {
+        for handle in editHandles() {
             NSColor.white.setFill()
             NSColor.controlAccentColor.setStroke()
-            let square = NSBezierPath(roundedRect: rect, xRadius: 1, yRadius: 1)
-            square.fill(); square.stroke()
-        }
-        for handle in arrowHandles() {
-            NSColor.white.setFill()
-            NSColor.controlAccentColor.setStroke()
-            let circle = NSBezierPath(ovalIn: handle.rect)
-            circle.lineWidth = 2
-            circle.fill(); circle.stroke()
+            if case .arrow = handle.kind {
+                let circle = NSBezierPath(ovalIn: handle.rect)
+                circle.lineWidth = 2
+                circle.fill(); circle.stroke()
+            } else {
+                let square = NSBezierPath(roundedRect: handle.rect, xRadius: 1, yRadius: 1)
+                square.fill(); square.stroke()
+            }
         }
         if let selection = model.selectionRect, !selection.isEmpty {
             let rect = viewRect(selection, scale: imageScale)
@@ -171,57 +194,98 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
         return rect.insetBy(dx: -4, dy: -4)
     }
 
-    private func textResizeHandles() -> [(corner: AnnotationResizeCorner, rect: CGRect)] {
-        guard let model, model.selectionRect == nil, model.tool == .select || model.tool == .text,
-              let selected = model.annotations.first(where: { $0.id == model.selectedID }),
-              selected.kind == .text, !selected.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
-        let selection = selectionRect(for: selected)
-        return AnnotationResizeCorner.allCases.map { corner in
-            let point = corner.point(in: selection)
-            return (corner, CGRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8))
+    /// Handles belong to the selected annotation and to the annotation under the pointer.
+    /// Members of a multiple selection have none, so dragging any of them moves the group.
+    private func editHandles() -> [AnnotationEditHandle] {
+        guard let model, model.selectionRect == nil, model.tool != .crop else { return [] }
+        let hovered = hoveredAnnotationID.flatMap { model.selectedIDs.count > 1 && model.selectedIDs.contains($0) ? nil : $0 }
+        let ids = [model.selectedID, hovered].compactMap { $0 }
+        return model.annotations.filter { ids.contains($0.id) }.flatMap { annotation -> [AnnotationEditHandle] in
+            func handle(_ kind: AnnotationEditHandle.Kind, at point: CGPoint, radius: CGFloat = 4) -> AnnotationEditHandle {
+                AnnotationEditHandle(annotationID: annotation.id, kind: kind,
+                                     rect: CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2))
+            }
+            switch annotation.kind {
+            case .arrow:
+                return AnnotationArrowHandle.allCases.map { handle(.arrow($0), at: viewPoint($0.point(in: annotation)), radius: 5) }
+            case .text:
+                guard !annotation.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+                let selection = selectionRect(for: annotation)
+                return AnnotationResizeCorner.allCases.map { handle(.text($0), at: $0.point(in: selection)) }
+            default:
+                return AnnotationShapeHandle.handles(for: annotation).map { handle(.shape($0), at: viewPoint($0.point(in: annotation))) }
+            }
         }
     }
 
-    private func resizeCorner(at point: CGPoint) -> AnnotationResizeCorner? {
-        textResizeHandles().first { $0.rect.insetBy(dx: -4, dy: -4).contains(point) }?.corner
-    }
-
-    private func arrowHandles() -> [(handle: AnnotationArrowHandle, rect: CGRect)] {
-        guard let model, model.selectionRect == nil, model.tool == .select || model.tool == .arrow,
-              let selected = model.annotations.first(where: { $0.id == model.selectedID }),
-              selected.kind == .arrow else { return [] }
-        return AnnotationArrowHandle.allCases.map { handle in
-            let point = viewRect(CGRect(origin: handle.point(in: selected), size: .zero), scale: imageScale).origin
-            return (handle, CGRect(x: point.x - 5, y: point.y - 5, width: 10, height: 10))
-        }
-    }
-
-    private func arrowHandle(at point: CGPoint) -> AnnotationArrowHandle? {
+    private func editHandle(at point: CGPoint) -> AnnotationEditHandle? {
         // Pick the nearest handle when short arrows have overlapping hit areas.
         // Reverse drawing order gives the visible end handle priority on a tie.
-        arrowHandles().reversed().filter { $0.rect.insetBy(dx: -4, dy: -4).contains(point) }
-            .min { hypot($0.rect.midX - point.x, $0.rect.midY - point.y) < hypot($1.rect.midX - point.x, $1.rect.midY - point.y) }?.handle
+        editHandles().reversed().filter { $0.rect.insetBy(dx: -4, dy: -4).contains(point) }
+            .min { hypot($0.rect.midX - point.x, $0.rect.midY - point.y) < hypot($1.rect.midX - point.x, $1.rect.midY - point.y) }
     }
 
-    private func shapeHandles() -> [(handle: AnnotationShapeHandle, rect: CGRect)] {
-        guard let model, model.selectionRect == nil, model.tool == .select,
-              let selected = model.annotations.first(where: { $0.id == model.selectedID }) else { return [] }
-        return AnnotationShapeHandle.handles(for: selected).map { handle in
-            let point = viewRect(CGRect(origin: handle.point(in: selected), size: .zero), scale: imageScale).origin
-            return (handle, CGRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8))
+    /// Six view points around visible strokes and fills, expressed in image pixels.
+    private var hitTolerance: CGFloat { 6 / imageScale }
+
+    func pointerTarget(at location: CGPoint) -> AnnotationPointerTarget {
+        updateImageGeometry()
+        guard let model, model.tool != .crop else { return .canvas }
+        if let handle = editHandle(at: location) { return .handle(handle) }
+        guard let point = imagePoint(location, requireInside: false, clampToImage: false),
+              let hit = model.annotation(at: point, tolerance: hitTolerance) else { return .canvas }
+        return hit.kind == .text && model.tool == .text ? .editText(hit.id) : .move(hit.id)
+    }
+
+    private func updateHover(at location: CGPoint) {
+        let previous = hoveredAnnotationID
+        defer { if hoveredAnnotationID != previous { needsDisplay = true } }
+        guard let model, dragStart == nil, model.tool != .crop, model.selectionRect == nil else {
+            if dragStart == nil { hoveredAnnotationID = nil }
+            return
         }
+        // Keep the hovered handles while the pointer is on them, including corners away from the outline.
+        if editHandle(at: location) != nil { return }
+        hoveredAnnotationID = imagePoint(location, requireInside: false, clampToImage: false)
+            .flatMap { model.annotation(at: $0, tolerance: hitTolerance) }?.id
     }
 
-    private func shapeHandle(at point: CGPoint) -> AnnotationShapeHandle? {
-        shapeHandles().reversed().filter { $0.rect.insetBy(dx: -4, dy: -4).contains(point) }
-            .min { hypot($0.rect.midX - point.x, $0.rect.midY - point.y) < hypot($1.rect.midX - point.x, $1.rect.midY - point.y) }?.handle
+    func refreshPointerFeedback(at suppliedLocation: CGPoint? = nil) {
+        guard dragStart == nil,
+              let location = suppliedLocation ?? window.map({ convert($0.mouseLocationOutsideOfEventStream, from: nil) }) else { return }
+        updateImageGeometry()
+        guard visibleRect.contains(location) else {
+            if hoveredAnnotationID != nil { hoveredAnnotationID = nil; needsDisplay = true }
+            return
+        }
+        updateHover(at: location)
+        guard window?.isKeyWindow == true else { return }
+        let target = pointerTarget(at: location)
+        // The native text editor manages its own cursor except over handles.
+        if let textEditor, textEditor.frame.contains(location), case .canvas = target { return }
+        cursor(for: target).set()
+    }
+
+    private func cursor(for target: AnnotationPointerTarget) -> NSCursor {
+        switch target {
+        case let .handle(handle):
+            switch handle.kind {
+            case let .shape(.corner(corner)), let .text(corner):
+                return .frameResize(position: corner.cursorPosition, directions: .all)
+            case .shape, .arrow:
+                return .pointingHand
+            }
+        case .move: return .openHand
+        case .editText: return .iBeam
+        case .canvas: return model?.tool == .text ? .iBeam : model?.tool == .select ? .arrow : .crosshair
+        }
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         updateImageGeometry()
         let local = convert(point, from: superview)
         // Handles stay draggable where their hit area overlaps the native text editor.
-        if bounds.contains(local), resizeCorner(at: local) != nil { return self }
+        if bounds.contains(local), editHandle(at: local) != nil { return self }
         return super.hitTest(point)
     }
 
@@ -258,6 +322,9 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
     private func viewRect(_ rect: CGRect, scale: CGFloat) -> CGRect {
         CGRect(x: displayedImageRect.minX + rect.minX * scale, y: displayedImageRect.minY + rect.minY * scale, width: rect.width * scale, height: rect.height * scale)
     }
+    private func viewPoint(_ point: CGPoint) -> CGPoint {
+        viewRect(CGRect(origin: point, size: .zero), scale: imageScale).origin
+    }
     private func imagePoint(_ point: CGPoint, requireInside: Bool, clampToImage: Bool = true) -> CGPoint? {
         guard let model, displayedImageRect.width > 0, displayedImageRect.height > 0,
               !requireInside || displayedImageRect.contains(point) else { return nil }
@@ -265,86 +332,110 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
         guard clampToImage else { return imagePoint }
         return CGPoint(x: min(model.pixelSize.width, max(0, imagePoint.x)), y: min(model.pixelSize.height, max(0, imagePoint.y)))
     }
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: model?.tool == .text ? .iBeam : model?.tool == .select ? .arrow : .crosshair)
-        for handle in textResizeHandles() { addCursorRect(handle.rect.insetBy(dx: -4, dy: -4), cursor: .crosshair) }
-        for handle in arrowHandles() { addCursorRect(handle.rect.insetBy(dx: -4, dy: -4), cursor: .openHand) }
-        for handle in shapeHandles() { addCursorRect(handle.rect.insetBy(dx: -4, dy: -4), cursor: .crosshair) }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        guard pointerTrackingArea == nil else { return }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        pointerTrackingArea = area
+    }
+    override func mouseMoved(with event: NSEvent) {
+        refreshPointerFeedback(at: convert(event.locationInWindow, from: nil))
+    }
+    override func cursorUpdate(with event: NSEvent) {
+        refreshPointerFeedback(at: convert(event.locationInWindow, from: nil))
+    }
+    override func mouseExited(with event: NSEvent) {
+        guard dragStart == nil, hoveredAnnotationID != nil else { return }
+        hoveredAnnotationID = nil
+        needsDisplay = true
     }
     override func mouseDown(with event: NSEvent) {
         updateImageGeometry()
         lastDrawingPoint = nil
+        clampsDragToImage = false
         let location = convert(event.locationInWindow, from: nil)
+        // A press decides its operation from the same target that hover shows.
+        updateHover(at: location)
         let extendingSelection = model?.tool == .select && event.modifierFlags.contains(.shift)
-        let corner = extendingSelection ? nil : resizeCorner(at: location)
+        let handle = extendingSelection ? nil : editHandle(at: location)
         window?.makeFirstResponder(self)
         model?.finishTextEditing()
-        if !extendingSelection, let handle = shapeHandle(at: location),
-           let point = imagePoint(location, requireInside: false, clampToImage: false),
-           model?.beginShapeEdit(handle: handle, at: point) == true {
-            editingShape = true
-            dragStart = point
-            needsDisplay = true
-            return
-        }
-        if !extendingSelection, let handle = arrowHandle(at: location),
-           let point = imagePoint(location, requireInside: false, clampToImage: false) {
-            if event.clickCount == 2, handle == .bend {
-                model?.straightenSelectedArrow()
-            } else if model?.beginArrowEdit(handle: handle, at: point) == true {
-                editingArrow = true
-                dragStart = point
+        guard let model else { return }
+        if let handle, let point = imagePoint(location, requireInside: false, clampToImage: false) {
+            switch handle.kind {
+            case let .shape(shapeHandle):
+                if model.beginShapeEdit(handle.annotationID, handle: shapeHandle, at: point) { editingShape = true; dragStart = point }
+            case let .arrow(arrowHandle):
+                if event.clickCount == 2, arrowHandle == .bend {
+                    model.straightenArrow(handle.annotationID)
+                } else if model.beginArrowEdit(handle.annotationID, handle: arrowHandle, at: point) {
+                    editingArrow = true
+                    dragStart = point
+                }
+            case let .text(corner):
+                if model.beginTextResize(handle.annotationID, corner: corner, at: point) { resizingText = true; dragStart = point }
             }
+            synchronizeTextEditor()
             needsDisplay = true
             return
         }
-        if let corner, let point = imagePoint(location, requireInside: false, clampToImage: false),
-           model?.beginTextResize(corner: corner, at: point) == true {
-            resizingText = true
-            dragStart = point
+        // Pixelation is drawn over source pixels, but existing annotations outside them stay movable.
+        let startsOnAnnotation = imagePoint(location, requireInside: false, clampToImage: false)
+            .flatMap { model.annotation(at: $0, tolerance: hitTolerance) } != nil
+        let constrainToImage = model.tool == .crop || (model.tool == .pixelate && !startsOnAnnotation)
+        guard let point = imagePoint(location, requireInside: constrainToImage, clampToImage: constrainToImage) else {
             synchronizeTextEditor()
             return
         }
-        let constrainToImage = model?.tool == .crop || model?.tool == .pixelate
-        guard let model, let point = imagePoint(location, requireInside: constrainToImage, clampToImage: constrainToImage) else {
-            synchronizeTextEditor()
-            return
-        }
-        if event.clickCount == 2, model.tool == .select, !extendingSelection,
-           let annotation = model.annotation(at: point), annotation.kind == .text {
+        if event.clickCount == 2, model.tool != .crop, !extendingSelection,
+           let annotation = model.annotation(at: point, tolerance: hitTolerance), annotation.kind == .text {
             model.beginTextEditing(annotation.id)
         } else {
-            model.begin(at: point, extendingSelection: extendingSelection)
+            model.begin(at: point, extendingSelection: extendingSelection, hitTolerance: hitTolerance)
             dragStart = model.editingTextID == nil ? point : nil
-            lastDrawingPoint = model.tool.supportsDrawingConstraint ? point : nil
+            clampsDragToImage = model.tool == .crop || (model.tool == .pixelate && model.isDrawingAnnotation)
+            lastDrawingPoint = model.isDrawingAnnotation && model.tool.supportsDrawingConstraint ? point : nil
         }
         synchronizeTextEditor()
         needsDisplay = true
     }
     override func mouseDragged(with event: NSEvent) {
-        let constrainToImage = !resizingText && (model?.tool == .crop || model?.tool == .pixelate)
-        guard dragStart != nil, let point = imagePoint(convert(event.locationInWindow, from: nil), requireInside: false, clampToImage: constrainToImage) else { return }
+        guard dragStart != nil, let point = imagePoint(convert(event.locationInWindow, from: nil), requireInside: false, clampToImage: clampsDragToImage) else { return }
         if lastDrawingPoint != nil { lastDrawingPoint = point }
         model?.continueDrag(to: point, constrained: event.modifierFlags.contains(.shift)); needsDisplay = true
     }
     override func flagsChanged(with event: NSEvent) {
-        guard dragStart != nil, let point = lastDrawingPoint, model?.tool.supportsDrawingConstraint == true else { return }
+        guard dragStart != nil, let point = lastDrawingPoint else { return }
         model?.continueDrag(to: point, constrained: event.modifierFlags.contains(.shift))
         needsDisplay = true
     }
     override func mouseUp(with event: NSEvent) {
         guard dragStart != nil else { return }
+        let location = convert(event.locationInWindow, from: nil)
         if model?.selectionRect != nil || editingShape,
-           let point = imagePoint(convert(event.locationInWindow, from: nil), requireInside: false, clampToImage: false) {
+           let point = imagePoint(location, requireInside: false, clampToImage: false) {
             model?.continueDrag(to: point)
         } else if let point = lastDrawingPoint {
             model?.continueDrag(to: point, constrained: event.modifierFlags.contains(.shift))
         }
         lastDrawingPoint = nil
-        dragStart = nil; resizingText = false; editingArrow = false; editingShape = false; model?.endDrag(); needsDisplay = true
+        dragStart = nil; clampsDragToImage = false; resizingText = false; editingArrow = false; editingShape = false; model?.endDrag(); needsDisplay = true
         enclosingScrollView?.needsLayout = true
+        refreshPointerFeedback(at: location)
     }
     // Keyboard commands are dispatched by the window using the shared shortcut settings.
+}
+
+private extension AnnotationResizeCorner {
+    var cursorPosition: NSCursor.FrameResizePosition {
+        switch self {
+        case .topLeft: .topLeft
+        case .topRight: .topRight
+        case .bottomLeft: .bottomLeft
+        case .bottomRight: .bottomRight
+        }
+    }
 }
 
 private final class AnnotationTextView: NSTextView {
