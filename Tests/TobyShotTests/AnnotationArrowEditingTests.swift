@@ -13,7 +13,7 @@ struct AnnotationArrowEditingTests {
         let createdID = model.selectedID
         model.endDrag()
 
-        #expect(model.tool == .select)
+        #expect(model.tool == .arrow)
         #expect(model.selectedID == createdID)
         let created = model.annotations[0]
         #expect(created.kind == .arrow)
@@ -130,7 +130,7 @@ struct AnnotationArrowEditingTests {
         model.continueDrag(to: CGPoint(x: 140, y: 90))
         let createdID = model.selectedID
         model.endDrag()
-        #expect(model.tool == .select)
+        #expect(model.tool == .arrow)
         #expect(model.selectedID == createdID)
         #expect(model.annotations.count == 2)
     }

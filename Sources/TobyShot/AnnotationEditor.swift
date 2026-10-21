@@ -495,7 +495,6 @@ final class AnnotationEditorModel: ObservableObject {
             undoStack.append(original)
             redoStack.removeAll()
         }
-        if tool == .text { tool = .select }
         flushImageChange()
     }
 
@@ -529,33 +528,39 @@ final class AnnotationEditorModel: ObservableObject {
     }
 
     @discardableResult
-    func beginTextResize(corner: AnnotationResizeCorner, at point: CGPoint) -> Bool {
-        guard tool == .select || tool == .text,
-              let id = selectedID, let annotation = annotations.first(where: { $0.id == id }),
+    func beginTextResize(_ annotationID: UUID? = nil, corner: AnnotationResizeCorner, at point: CGPoint) -> Bool {
+        guard tool != .crop,
+              let id = annotationID ?? selectedID, let annotation = annotations.first(where: { $0.id == id }),
               annotation.kind == .text, !annotation.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         finishTextEditing()
+        selectedID = id
         textResize = AnnotationTextResize(original: annotation, corner: corner, start: point, bounds: textSelectionBounds(annotation))
         moveCheckpointed = false
         return true
     }
 
-    func annotation(at point: CGPoint) -> EditorAnnotation? {
-        annotations.last(where: { hitTest($0, point: point) })
+    /// The topmost annotation that a gesture starting at `point` edits. `tolerance` is in image pixels.
+    func annotation(at point: CGPoint, tolerance: CGFloat = 6) -> EditorAnnotation? {
+        annotations.last(where: { hitTest($0, point: point, tolerance: tolerance) })
     }
 
+    /// Whether the current gesture creates a new annotation.
+    var isDrawingAnnotation: Bool { drawingAnnotationID != nil }
+
     @discardableResult
-    func beginArrowEdit(handle: AnnotationArrowHandle, at point: CGPoint) -> Bool {
-        guard tool == .select || tool == .arrow,
-              let annotation = annotations.first(where: { $0.id == selectedID }),
+    func beginArrowEdit(_ annotationID: UUID? = nil, handle: AnnotationArrowHandle, at point: CGPoint) -> Bool {
+        guard tool != .crop, let id = annotationID ?? selectedID,
+              let annotation = annotations.first(where: { $0.id == id }),
               annotation.kind == .arrow else { return false }
         finishTextEditing()
+        selectedID = id
         arrowEdit = AnnotationArrowEdit(original: annotation, handle: handle, start: point)
         moveCheckpointed = false
         return true
     }
 
-    func straightenSelectedArrow() {
-        guard let id = selectedID, let index = annotations.firstIndex(where: { $0.id == id }),
+    func straightenArrow(_ annotationID: UUID? = nil) {
+        guard let id = annotationID ?? selectedID, let index = annotations.firstIndex(where: { $0.id == id }),
               annotations[index].kind == .arrow, annotations[index].arrowBend != .zero else { return }
         checkpoint()
         annotations[index].arrowBend = .zero
@@ -563,31 +568,33 @@ final class AnnotationEditorModel: ObservableObject {
     }
 
     @discardableResult
-    func beginShapeEdit(handle: AnnotationShapeHandle, at point: CGPoint) -> Bool {
-        guard tool == .select,
-              let annotation = annotations.first(where: { $0.id == selectedID }),
+    func beginShapeEdit(_ annotationID: UUID? = nil, handle: AnnotationShapeHandle, at point: CGPoint) -> Bool {
+        guard tool != .crop, let id = annotationID ?? selectedID,
+              let annotation = annotations.first(where: { $0.id == id }),
               AnnotationShapeHandle.handles(for: annotation).contains(handle) else { return false }
         finishTextEditing()
         resetSelectionDrag()
+        selectedID = id
         shapeEdit = AnnotationShapeEdit(original: annotation, handle: handle, start: point)
         moveCheckpointed = false
         return true
     }
 
-    func begin(at point: CGPoint, extendingSelection: Bool = false) {
+    /// Starts a gesture. With a drawing tool, a gesture that starts on an annotation's visible
+    /// stroke or fill moves it; one that starts on empty canvas creates a new annotation.
+    func begin(at point: CGPoint, extendingSelection: Bool = false, hitTolerance: CGFloat = 6) {
         finishTextEditing()
         resetSelectionDrag()
+        moveCheckpointed = false
+        if tool == .crop { cropAnchor = point; cropRect = CGRect(origin: point, size: .zero); return }
+        let hit = annotation(at: point, tolerance: hitTolerance)
         if tool == .select {
-            moveCheckpointed = false
-            if let hit = annotation(at: point) {
+            if let hit {
                 if extendingSelection {
                     if selectedIDs.remove(hit.id) != nil { return }
                     selectedIDs.insert(hit.id)
-                } else if !selectedIDs.contains(hit.id) {
-                    selectedID = hit.id
                 }
-                dragOrigin = point
-                movingOriginals = Dictionary(uniqueKeysWithValues: annotations.filter { selectedIDs.contains($0.id) }.map { ($0.id, $0) })
+                beginMoving(hit, at: point)
             } else {
                 if !extendingSelection { selectedIDs.removeAll() }
                 selectionOriginalIDs = selectedIDs
@@ -596,17 +603,21 @@ final class AnnotationEditorModel: ObservableObject {
             }
             return
         }
+        if tool == .text, let hit, hit.kind == .text {
+            beginTextEditing(hit.id)
+            return
+        }
+        if let hit {
+            beginMoving(hit, at: point)
+            return
+        }
         if tool == .text {
-            if let hit = annotation(at: point), hit.kind == .text {
-                beginTextEditing(hit.id)
-            } else {
-                setBackgroundEditing(false)
-                textEditOriginalState = state()
-                let annotation = make(.text, at: point, end: point)
-                annotations.append(annotation)
-                selectedID = annotation.id
-                editingTextID = annotation.id
-            }
+            setBackgroundEditing(false)
+            textEditOriginalState = state()
+            let annotation = make(.text, at: point, end: point)
+            annotations.append(annotation)
+            selectedID = annotation.id
+            editingTextID = annotation.id
             return
         }
         if tool == .step {
@@ -617,7 +628,6 @@ final class AnnotationEditorModel: ObservableObject {
             drawingAnnotationID = annotation.id
             return
         }
-        if tool == .crop { cropAnchor = point; cropRect = CGRect(origin: point, size: .zero); return }
         checkpoint()
         let kind: EditorAnnotation.Kind
         switch tool {
@@ -631,6 +641,12 @@ final class AnnotationEditorModel: ObservableObject {
         if kind == .freehand { a.points = [point] }
         annotations.append(a); selectedID = a.id
         drawingAnnotationID = a.id
+    }
+
+    private func beginMoving(_ hit: EditorAnnotation, at point: CGPoint) {
+        if !selectedIDs.contains(hit.id) { selectedID = hit.id }
+        dragOrigin = point
+        movingOriginals = Dictionary(uniqueKeysWithValues: annotations.filter { selectedIDs.contains($0.id) }.map { ($0.id, $0) })
     }
 
     func continueDrag(to point: CGPoint, constrained: Bool = false) {
@@ -656,17 +672,16 @@ final class AnnotationEditorModel: ObservableObject {
             annotations[index] = resized
             return
         }
-        if tool == .select {
-            if let anchor = selectionAnchor {
-                let selection = rect(from: anchor, to: point)
-                selectionRect = selection
-                selectedIDs = selectionOriginalIDs.union(annotations.filter { annotation in
-                    let bounds = annotation.kind == .text ? textSelectionBounds(annotation) : annotationBounds(annotation)
-                    return !selection.isEmpty && selection.intersects(bounds)
-                }.map(\.id))
-                return
-            }
-            guard !movingOriginals.isEmpty else { return }
+        if let anchor = selectionAnchor {
+            let selection = rect(from: anchor, to: point)
+            selectionRect = selection
+            selectedIDs = selectionOriginalIDs.union(annotations.filter { annotation in
+                let bounds = annotation.kind == .text ? textSelectionBounds(annotation) : annotationBounds(annotation)
+                return !selection.isEmpty && selection.intersects(bounds)
+            }.map(\.id))
+            return
+        }
+        if !movingOriginals.isEmpty {
             let delta = CGPoint(x: point.x - dragOrigin.x, y: point.y - dragOrigin.y)
             guard delta != .zero || moveCheckpointed else { return }
             if !moveCheckpointed { checkpoint(); selectedIDs = Set(movingOriginals.keys); moveCheckpointed = true }
@@ -677,6 +692,7 @@ final class AnnotationEditorModel: ObservableObject {
             }
             return
         }
+        if tool == .select { return }
         if tool == .crop {
             if let cropAnchor { cropRect = rect(from: cropAnchor, to: point) }
             return
@@ -710,8 +726,8 @@ final class AnnotationEditorModel: ObservableObject {
             tool = .select
         }
         if let id = drawingAnnotationID, annotations.contains(where: { $0.id == id }) {
+            // Keep the drawing tool active so the next gesture can create another annotation.
             selectedID = id
-            tool = .select
         }
         drawingAnnotationID = nil
         flushImageChange()
@@ -748,8 +764,11 @@ final class AnnotationEditorModel: ObservableObject {
     nonisolated static func bounds(for a: EditorAnnotation) -> CGRect {
         AnnotationGeometry(a).renderedBounds
     }
-    private func hitTest(_ a: EditorAnnotation, point: CGPoint) -> Bool {
-        annotationBounds(a).insetBy(dx: -6, dy: -6).contains(point)
+    private func hitTest(_ a: EditorAnnotation, point: CGPoint, tolerance: CGFloat) -> Bool {
+        // Select picks anything within an annotation's bounds. Drawing tools only edit visible
+        // strokes and fills, leaving empty interiors and space beside curves free for drawing.
+        if tool == .select { return annotationBounds(a).insetBy(dx: -tolerance, dy: -tolerance).contains(point) }
+        return AnnotationHitTest.contains(a, point: point, tolerance: tolerance, imageSize: pixelSize)
     }
     private func translated(_ a: EditorAnnotation, by delta: CGPoint) -> EditorAnnotation {
         var b = a; b.start.x += delta.x; b.start.y += delta.y; b.end.x += delta.x; b.end.y += delta.y
@@ -899,7 +918,7 @@ private struct AnnotationEditorRoot: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Annotation shortcuts").font(.title2.bold())
             Text("Move \(shortcuts.label(for: .moveTool))   Crop \(shortcuts.label(for: .cropTool))   Draw \(shortcuts.label(for: .drawTool))   Line \(shortcuts.label(for: .lineTool))\nText \(shortcuts.label(for: .textTool))   Arrow \(shortcuts.label(for: .arrowTool))   Counter \(shortcuts.label(for: .counterTool))   Ellipse \(shortcuts.label(for: .ellipseTool))\nRedact \(shortcuts.label(for: .redactionTool))   Rectangle \(shortcuts.label(for: .rectangleTool))   Filled rectangle \(shortcuts.label(for: .filledRectangleTool))   Pixelate \(shortcuts.label(for: .pixelateTool))\nBackground \(shortcuts.label(for: .backgroundTool))   Smaller/larger \(shortcuts.label(for: .decreaseToolSize))/\(shortcuts.label(for: .increaseToolSize))\nCopy object \(shortcuts.label(for: .editorCopyObject))   Duplicate \(shortcuts.label(for: .editorDuplicate))   Save \(shortcuts.label(for: .editorSave))   Save as \(shortcuts.label(for: .editorSaveAs))\nCopy image \(shortcuts.label(for: .editorCopyScreenshot))   Print \(shortcuts.label(for: .editorPrint))   Pin \(shortcuts.label(for: .editorPin))\nUndo ⌘Z   Redo ⇧⌘Z   Delete Remove   Escape Select")
-            Text("Tools return to the pointer after drawing, placing a numbered step, applying a crop, or finishing text entry. New annotations stay selected. Hold Shift while drawing to snap lines and arrows to 45° increments, make rectangles square, or make ellipses circular. With the pointer, drag empty canvas space to select multiple annotations, then drag any selected annotation to move the group. Hold Shift to add to the selection. Drag an arrow endpoint to adjust it, or the middle handle to bend it; double-click the middle handle to straighten it. Drag the arrow itself to move it. Click with Text to type on the image; double-click existing text to edit it. Drag shape corners to resize rectangles, ellipses, freehand drawings, numbered steps, redactions, and pixelation regions; drag line endpoints to adjust them. Color and size controls update selected annotations. Drag a text corner to resize. Return finishes editing, Shift-Return adds a line. Crop applies when you finish the crop selection.").foregroundStyle(.secondary)
+            Text("Drawing tools stay active, so you can add one annotation after another; Crop returns to the pointer once applied. New annotations stay selected. With a drawing tool, hover any annotation to show its handles, then drag a handle to edit it or drag its visible stroke or fill to move it. Dragging empty canvas, including inside an outlined shape, draws a new annotation. Hold Shift while drawing to snap lines and arrows to 45° increments, make rectangles square, or make ellipses circular. With the pointer, drag empty canvas space to select multiple annotations, then drag any selected annotation to move the group. Hold Shift to add to the selection. Drag an arrow endpoint to adjust it, or the middle handle to bend it; double-click the middle handle to straighten it. Drag the arrow itself to move it. Click with Text to type on the image; double-click existing text to edit it. Drag shape corners to resize rectangles, ellipses, freehand drawings, numbered steps, redactions, and pixelation regions; drag line endpoints to adjust them. Color and size controls update selected annotations. Drag a text corner to resize. Return finishes editing, Shift-Return adds a line. Crop applies when you finish the crop selection.").foregroundStyle(.secondary)
             HStack { Spacer(); Button("Close") { showHelp = false }.keyboardShortcut(.defaultAction) }
         }.padding(24).frame(width: 420)
     }

@@ -128,18 +128,26 @@ struct AnnotationTextResizeTests {
     }
 
     @Test
-    func nonTextSelectionAndDrawingToolRejectResize() {
+    func nonTextSelectionAndCropRejectResizeWhileDrawingToolsAllowIt() {
         let shape = EditorAnnotation(kind: .rectangle, start: CGPoint(x: 20, y: 20), end: CGPoint(x: 80, y: 70))
         let shapeModel = model(with: shape)
         #expect(!shapeModel.beginTextResize(corner: .bottomRight, at: CGPoint(x: 80, y: 70)))
 
         let text = textAnnotation()
         let drawingModel = model(with: text)
-        drawingModel.tool = .freehand
+        drawingModel.tool = .crop
         let bottomRight = AnnotationResizeCorner.bottomRight.point(in: drawingModel.textSelectionBounds(text))
         #expect(!drawingModel.beginTextResize(corner: .bottomRight, at: bottomRight))
         #expect(drawingModel.annotations == [text])
         #expect(!drawingModel.canUndo)
+
+        drawingModel.tool = .freehand
+        #expect(drawingModel.beginTextResize(text.id, corner: .bottomRight, at: bottomRight))
+        drawingModel.continueDrag(to: CGPoint(x: bottomRight.x + 20, y: bottomRight.y + 20))
+        drawingModel.endDrag()
+        #expect(drawingModel.annotations.count == 1)
+        #expect(drawingModel.annotations[0].textSize != text.textSize)
+        #expect(drawingModel.tool == .freehand)
     }
 
     private func textAnnotation(size: CGFloat = 28) -> EditorAnnotation {

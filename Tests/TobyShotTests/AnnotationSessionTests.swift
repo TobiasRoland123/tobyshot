@@ -19,8 +19,8 @@ struct AnnotationSessionTests {
             model.updateBackground(padding: 48, cornerRadius: 24)
             model.zoom = 2
             model.tool = .rectangle
-            model.begin(at: CGPoint(x: 80, y: 70))
-            model.continueDrag(to: CGPoint(x: 140, y: 120))
+            model.begin(at: CGPoint(x: 100, y: 150))
+            model.continueDrag(to: CGPoint(x: 200, y: 175))
             model.endDrag()
             model.undo()
             let annotations = model.annotations

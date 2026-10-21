@@ -20,7 +20,7 @@ struct AnnotationCanvasArrowTests {
         }
         drag(from: CGPoint(x: 50, y: 100), to: CGPoint(x: 200, y: 100))
         let placed = try #require(model.annotations.first)
-        #expect(model.tool == .select)
+        #expect(model.tool == .arrow)
         #expect(model.selectedID == placed.id)
         drag(from: placed.end, to: CGPoint(x: 250, y: 100))
         #expect(model.annotations.count == 1)
@@ -37,6 +37,7 @@ struct AnnotationCanvasArrowTests {
         #expect(moved.arrowBend == bent.arrowBend)
         #expect(model.annotations.count == 1)
         #expect(model.selectedID == placed.id)
+        #expect(model.tool == .arrow)
         model.undo()
         #expect(model.annotations == [bent])
     }

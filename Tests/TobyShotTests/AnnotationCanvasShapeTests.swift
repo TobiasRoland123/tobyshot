@@ -16,7 +16,7 @@ struct AnnotationCanvasShapeTests {
         model.tool = tool
         drag(from: CGPoint(x: 50, y: 50), to: CGPoint(x: 150, y: 110), model: model, canvas: canvas, window: window)
         let placed = try #require(model.annotations.first)
-        #expect(model.tool == .select)
+        #expect(model.tool == tool)
         #expect(model.selectedID == placed.id)
         #expect(placed.kind == kind)
 
@@ -32,7 +32,11 @@ struct AnnotationCanvasShapeTests {
             #expect(resized.points.last == resized.end)
         }
 
-        drag(from: CGPoint(x: 120, y: 90), to: CGPoint(x: 130, y: 105), model: model, canvas: canvas, window: window)
+        // Grab the visible stroke or fill; an outlined shape's empty interior draws instead.
+        let grab = kind == .line || kind == .freehand ? CGPoint(x: 120, y: 90) : CGPoint(x: 120, y: 50)
+        drag(from: grab, to: CGPoint(x: grab.x + 10, y: grab.y + 15), model: model, canvas: canvas, window: window)
+        #expect(model.annotations.count == 1)
+        #expect(model.tool == tool)
         #expect(model.annotations[0].start == CGPoint(x: 60, y: 65))
         #expect(model.annotations[0].end == CGPoint(x: 200, y: 145))
         model.undo()
@@ -75,7 +79,7 @@ struct AnnotationCanvasShapeTests {
         model.tool = .step
         drag(from: CGPoint(x: 100, y: 100), to: CGPoint(x: 100, y: 100), model: model, canvas: canvas, window: window)
         let placed = try #require(model.annotations.first)
-        #expect(model.tool == .select)
+        #expect(model.tool == .step)
         // Default width 5 gives a 17.5 px radius. Grow the diameter by 35 px.
         drag(from: CGPoint(x: 117.5, y: 117.5), to: CGPoint(x: 152.5, y: 152.5), model: model, canvas: canvas, window: window)
         #expect(model.annotations[0].width == 10)

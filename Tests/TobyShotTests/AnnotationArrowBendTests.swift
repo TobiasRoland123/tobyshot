@@ -71,10 +71,10 @@ struct AnnotationArrowBendTests {
         var original = arrow()
         original.arrowBend = CGPoint(x: 0, y: 50)
         let model = model(with: original)
-        model.straightenSelectedArrow()
+        model.straightenArrow()
         #expect(model.annotations[0].arrowBend == .zero)
         #expect(model.selectedID == original.id)
-        model.straightenSelectedArrow()
+        model.straightenArrow()
         model.undo()
         #expect(model.annotations == [original])
         #expect(!model.canUndo)
@@ -125,25 +125,25 @@ struct AnnotationArrowBendTests {
         #expect(model.annotations.first?.arrowBendPoint == CGPoint(x: 20, y: 20))
     }
 
-    @Test func otherToolsAndNonArrowSelectionsCannotEditArrowHandles() {
+    @Test func everyAnnotationToolButCropCanEditArrowHandlesOfArrowsOnly() {
         let original = arrow()
         let model = model(with: original)
-        for tool in [AnnotationTool.text, .rectangle, .freehand, .crop] {
-            model.tool = tool
-            for handle in AnnotationArrowHandle.allCases {
-                #expect(!model.beginArrowEdit(handle: handle, at: handle.point(in: original)))
-            }
+        model.tool = .crop
+        for handle in AnnotationArrowHandle.allCases {
+            #expect(!model.beginArrowEdit(handle: handle, at: handle.point(in: original)))
         }
-        model.tool = .arrow
-        #expect(model.beginArrowEdit(handle: .bend, at: original.arrowBendPoint))
-        model.endDrag()
+        for tool in [AnnotationTool.select, .arrow, .text, .rectangle, .freehand, .step] {
+            model.tool = tool
+            #expect(model.beginArrowEdit(original.id, handle: .bend, at: original.arrowBendPoint))
+            model.endDrag()
+        }
         var line = original
         line.kind = .line
         model.annotations = [line]
-        for tool in [AnnotationTool.select, .arrow] {
+        for tool in [AnnotationTool.select, .arrow, .rectangle] {
             model.tool = tool
             for handle in AnnotationArrowHandle.allCases {
-                #expect(!model.beginArrowEdit(handle: handle, at: handle.point(in: line)))
+                #expect(!model.beginArrowEdit(line.id, handle: handle, at: handle.point(in: line)))
             }
         }
         #expect(!model.canUndo)

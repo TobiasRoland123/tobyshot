@@ -41,8 +41,8 @@ struct AnnotationAppearanceTests {
 
         // The same open editor picks up new settings without restyling existing objects.
         model.tool = .arrow
-        model.begin(at: CGPoint(x: 30, y: 100))
-        model.continueDrag(to: CGPoint(x: 210, y: 50))
+        model.begin(at: CGPoint(x: 30, y: 140))
+        model.continueDrag(to: CGPoint(x: 210, y: 120))
         model.endDrag()
         #expect(model.annotations.last?.arrowStyle == .clean)
         #expect(model.annotations.last?.arrowStroke == .solid)
@@ -125,8 +125,8 @@ struct AnnotationAppearanceTests {
 
         // The open editor takes the new defaults only when placing another shape.
         model.tool = tool
-        model.begin(at: CGPoint(x: 50, y: 60))
-        if tool != .step { model.continueDrag(to: CGPoint(x: 190, y: 120)) }
+        model.begin(at: CGPoint(x: 220, y: 20))
+        if tool != .step { model.continueDrag(to: CGPoint(x: 250, y: 40)) }
         model.endDrag()
         #expect(model.annotations.last?.arrowStyle == .clean)
         #expect(model.annotations.last?.arrowStroke == .solid)
