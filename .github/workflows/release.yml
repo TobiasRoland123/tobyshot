@@ -27,6 +27,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Python for DMG layout
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
       - name: Validate public release destination
         shell: bash
         env:

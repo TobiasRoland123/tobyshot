@@ -43,6 +43,12 @@ export TOBYSHOT_FEED_URL="$feed_url"
 export TOBYSHOT_ARCHS="${TOBYSHOT_ARCHS:-arm64 x86_64}"
 export TOBYSHOT_REQUIRE_PERSISTENT_SIGNING=1
 
+dmg_python="${TOBYSHOT_PYTHON:-python3}"
+if ! "$dmg_python" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null; then
+    echo "Building the DMG requires Python 3.10 or newer; set TOBYSHOT_PYTHON to its path." >&2
+    exit 2
+fi
+
 bash scripts/build.sh release
 
 app="$(pwd)/build/TobyShot.app"
@@ -75,12 +81,20 @@ fi
 
 make_zip "$zip"
 
-dmg_source="$work_dir/dmg"
-mkdir -p "$dmg_source"
-/usr/bin/ditto "$app" "$dmg_source/TobyShot.app"
-ln -s /Applications "$dmg_source/Applications"
-/usr/bin/hdiutil create -volname "TobyShot ${version}" -srcfolder "$dmg_source" \
-    -ov -format UDZO "$dmg"
+# The DMG opens as a fixed-size Finder window with an instruction background,
+# TobyShot.app on the left, and an Applications link on the right.
+source scripts/sdk.sh
+dmg_background="$work_dir/dmg-background"
+/usr/bin/xcrun swift -sdk "$tobyshot_sdk" scripts/dmg-background.swift "$dmg_background"
+dmg_tools="$work_dir/dmg-tools"
+"$dmg_python" -m venv "$dmg_tools"
+"$dmg_tools/bin/python" -m pip install --quiet --disable-pip-version-check \
+    --only-binary=:all: --require-hashes -r scripts/dmg-requirements.txt
+rm -f "$dmg"
+"$dmg_tools/bin/dmgbuild" -s scripts/dmg-settings.py \
+    -D app="$app" -D background="$dmg_background/background.png" \
+    "TobyShot ${version}" "$dmg"
+/usr/bin/hdiutil verify -quiet "$dmg"
 
 if [[ -n "${TOBYSHOT_NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
     /usr/bin/xcrun notarytool submit "$dmg" "${notary_args[@]}"
