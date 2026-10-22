@@ -356,14 +356,7 @@ final class AppCoordinator: ObservableObject {
         Task {
             do {
                 let result = try await Task.detached(priority: .userInitiated) {
-                    let request = VNRecognizeTextRequest()
-                    request.recognitionLevel = .accurate
-                    request.usesLanguageCorrection = true
-                    request.automaticallyDetectsLanguage = language == "Automatic"
-                    if language == "English" { request.recognitionLanguages = ["en-US"] }
-                    if language == "Danish" { request.recognitionLanguages = ["da-DK"] }
-                    try VNImageRequestHandler(cgImage: cg).perform([request])
-                    return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: keepLines ? "\n" : " ")
+                    try TextRecognition.recognize(VNImageRequestHandler(cgImage: cg), language: language, keepLines: keepLines)
                 }.value
                 guard !result.isEmpty else { toast("No readable text found in this capture."); return }
                 NSPasteboard.general.clearContents(); NSPasteboard.general.setString(result, forType: .string)

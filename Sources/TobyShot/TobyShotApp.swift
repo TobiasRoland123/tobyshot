@@ -45,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         screenshotRetentionDays = Preferences.int("screenshotRetentionDays")
         NSApp.appearance = NSAppearance(named: .darkAqua)
         coordinator = AppCoordinator(shortcuts: hotKeys)
+        coordinator.store.startTextIndexing()
         setup = SetupAssistant(shortcuts: hotKeys, advisoryAccess: { ScreenCaptureService.hasPermission },
                                verifyAccess: { [weak self] in try await self?.coordinator.verifyScreenPermission() ?? false })
         coordinator.screenshotCaptured = { [weak self] in self?.setup.screenshotCaptured() }
