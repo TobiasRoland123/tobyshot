@@ -5,14 +5,16 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct AnnotationShapeEditModelTests {
-    @Test(arguments: [EditorAnnotation.Kind.arrow, .rectangle, .filledRectangle, .ellipse, .line, .freehand, .text, .step])
-    func appearanceControlsEditSelectionAndUndoSeparately(kind: EditorAnnotation.Kind) {
+    @Test(arguments: [EditorAnnotation.Kind.arrow, .rectangle, .filledRectangle, .ellipse, .line, .freehand, .text, .step],
+        [AnnotationTool.select, .arrow])
+    func appearanceControlsEditSelectionAndUndoSeparately(kind: EditorAnnotation.Kind, tool: AnnotationTool) {
         let model = makeModel()
         let original = EditorAnnotation(kind: kind, start: CGPoint(x: 40, y: 40), end: CGPoint(x: 140, y: 100),
             color: .systemBlue, width: 10, text: "Label", textSize: kind == .text ? 48 : nil,
             arrowStyle: .sketch, arrowStroke: .dashed)
         model.annotations = [original]
         model.selectedID = original.id
+        model.tool = tool
         model.markSaved()
         #expect(model.currentColor == .systemBlue)
         #expect(model.currentStrokeWidth == 10)
@@ -25,6 +27,7 @@ struct AnnotationShapeEditModelTests {
         #expect(recolored.color == .systemRed)
         #expect(recolored.width == original.width)
         #expect(model.selectedID == original.id)
+        #expect(model.tool == tool)
         model.adjustToolSize(by: 1)
         let resized = model.annotations[0]
         #expect(resized.width == 11)
@@ -101,24 +104,55 @@ struct AnnotationShapeEditModelTests {
         #expect(model.annotations[0].color == .systemBlue)
     }
 
-    @Test func drawingToolAppearanceOnlyChangesNewAnnotations() {
+    @Test func drawingToolAppearanceEditsSelectedShapeAndKeepsToolAndSelection() {
         let model = makeModel()
         let original = EditorAnnotation(kind: .rectangle, start: .zero, end: CGPoint(x: 100, y: 100))
         model.annotations = [original]
         model.selectedID = original.id
         model.tool = .ellipse
-        model.color = .systemBlue
         model.strokeWidth = 20
+        #expect(model.annotations[0].width == 20)
+        #expect(model.selectedIDs == [original.id])
+        #expect(model.tool == .ellipse)
+        #expect(model.currentStrokeWidth == 20)
+        #expect(model.canUndo)
+
+        model.undo()
+        #expect(model.annotations == [original])
+        #expect(model.tool == .ellipse)
+        model.redo()
+        #expect(model.annotations[0].width == 20)
+
+        model.selectedID = original.id
+        model.strokeWidth = 20
+        #expect(model.annotations[0].width == 20)
+        model.undo()
         #expect(model.annotations == [original])
         #expect(!model.canUndo)
-        #expect(model.currentColor == .systemBlue)
+    }
+
+    @Test func drawingToolAppearanceWithoutSelectionSetsDefaultsForNewAnnotations() {
+        let model = makeModel()
+        model.tool = .ellipse
+        model.strokeWidth = 20
+        #expect(model.annotations.isEmpty)
+        #expect(!model.canUndo)
         #expect(model.currentStrokeWidth == 20)
         model.begin(at: CGPoint(x: 150, y: 100))
         model.continueDrag(to: CGPoint(x: 200, y: 150))
         model.endDrag()
-        #expect(model.annotations[0] == original)
-        #expect(model.annotations[1].color == .systemBlue)
-        #expect(model.annotations[1].width == 20)
+        #expect(model.annotations.count == 1)
+        #expect(model.annotations[0].width == 20)
+        #expect(model.tool == .ellipse)
+        let placed = model.annotations[0]
+        #expect(model.selectedID == placed.id)
+        model.strokeWidth = 10
+        #expect(model.annotations[0].width == 10)
+        #expect(model.currentStrokeWidth == 10)
+        #expect(model.selectedID == placed.id)
+        #expect(model.tool == .ellipse)
+        model.undo()
+        #expect(model.annotations == [placed])
     }
 
     @Test func clearingSelectionOrUndoingDuringResizeStopsTheGesture() {

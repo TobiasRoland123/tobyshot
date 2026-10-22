@@ -503,7 +503,7 @@ final class AnnotationEditorModel: ObservableObject {
     }
 
     private var appearanceSelection: [EditorAnnotation] {
-        guard tool == .select || editingTextID != nil else { return [] }
+        guard tool != .crop else { return [] }
         return annotations.filter { selectedIDs.contains($0.id) }
     }
 
@@ -551,7 +551,7 @@ final class AnnotationEditorModel: ObservableObject {
             if let width { annotations[index].width = width; annotations[index].textSize = nil }
             return
         }
-        guard tool == .select else { return }
+        guard tool != .crop else { return }
         let ids = selectedIDs
         let updated = annotations.map { annotation in
             guard ids.contains(annotation.id), annotation.kind != .redaction else { return annotation }
