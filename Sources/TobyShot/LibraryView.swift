@@ -14,7 +14,7 @@ struct LibraryView: View {
     private var filtered: [CaptureItem] {
         store.items.filter { item in
             (filter == "All captures" || (filter == "Screenshots" ? item.kind == .image : item.kind == .video)) &&
-            (search.isEmpty || item.title.localizedCaseInsensitiveContains(search))
+            item.matches(search)
         }
     }
 

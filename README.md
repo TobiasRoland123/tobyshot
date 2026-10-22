@@ -40,7 +40,7 @@ If capture still fails, quit TobyShot, remove only its entry from **Screen & Sys
 - Capture an area, window, or full screen, with an optional timer.
 - Annotate, crop, redact, copy, save, or pin screenshots.
 - Record your screen with optional system audio and microphone.
-- Recognize text, browse local capture history, and customize shortcuts.
+- Recognize text, search local capture history by title or by the text inside screenshots, and customize shortcuts.
 
 Exports go to `~/Documents/Captures` by default. If you used an earlier version that saved to `~/Pictures/TobyShot`, TobyShot keeps using that folder until you choose another one. Closing the library keeps TobyShot running in the menu bar.
 

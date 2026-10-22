@@ -60,13 +60,20 @@ struct CaptureItem: Identifiable, Codable, Equatable {
     var height: Int
     // Oldest export first; exporting an existing path moves it to the end.
     var exports: [CaptureExport] = []
+    // Nil until the screenshot has been read; empty when it contains no text.
+    var recognizedText: String? = nil
     var exportedPath: String? { exports.last?.path }
     var dimensions: String { "\(width) × \(height)" }
+
+    func matches(_ search: String) -> Bool {
+        search.isEmpty || title.localizedCaseInsensitiveContains(search)
+            || recognizedText?.localizedCaseInsensitiveContains(search) == true
+    }
 }
 
 extension CaptureItem {
     private enum CodingKeys: String, CodingKey {
-        case id, filename, title, date, kind, width, height, exports
+        case id, filename, title, date, kind, width, height, exports, recognizedText
     }
 
     private enum LegacyCodingKeys: String, CodingKey {
@@ -88,6 +95,7 @@ extension CaptureItem {
         kind = try values.decode(Kind.self, forKey: .kind)
         width = try values.decode(Int.self, forKey: .width)
         height = try values.decode(Int.self, forKey: .height)
+        recognizedText = try values.decodeIfPresent(String.self, forKey: .recognizedText)
         if let canonical = try values.decodeIfPresent([CaptureExport].self, forKey: .exports) {
             exports = canonical
             return
@@ -120,12 +128,17 @@ final class CaptureStore: ObservableObject {
         case loaded([CaptureItem])
         case failed(Error)
     }
+    typealias TextRecognizer = (URL) async throws -> String
 
     @Published private(set) var historyLoadState: HistoryLoadState = .loaded([])
     let directory: URL
     private let indexURL: URL
     private let readHistory: (URL) throws -> Data
     private var thumbnails: [UUID: NSImage] = [:]
+    private var recognizeText: TextRecognizer?
+    private var textIndexing: Task<Void, Never>?
+    // Captures whose text could not be read are retried on the next launch.
+    private var unreadableTextIDs: Set<UUID> = []
     // Internal operations seam lets regression tests schedule replacements at the syscalls.
     var exportDeletionOperations = CaptureExportDeletion.Operations()
 
@@ -153,6 +166,46 @@ final class CaptureStore: ObservableObject {
         guard historyLoadError != nil else { return }
         try loadHistory(allowMissingIndex: false)
         try prune()
+        indexPendingText()
+    }
+
+    /// Reads the text in screenshots in the background so library search can match it.
+    /// Covers screenshots already in the library and every screenshot added afterwards.
+    func startTextIndexing(using recognizer: @escaping TextRecognizer = TextRecognition.searchableText) {
+        recognizeText = recognizer
+        indexPendingText()
+    }
+
+    /// Returns once no screenshot is waiting for text recognition.
+    func waitForTextIndexing() async {
+        await textIndexing?.value
+    }
+
+    private func indexPendingText() {
+        guard let recognizeText, textIndexing == nil else { return }
+        // Newest captures come first, so recent screenshots become searchable soonest.
+        textIndexing = Task {
+            while historyLoadError == nil, let item = items.first(where: {
+                $0.kind == .image && $0.recognizedText == nil && !unreadableTextIDs.contains($0.id)
+            }) {
+                do {
+                    let text = try await recognizeText(url(for: item))
+                    try saveRecognizedText(text, for: item.id)
+                } catch {
+                    unreadableTextIDs.insert(item.id)
+                    NSLog("TobyShot text search for %@: %@", item.filename, error.localizedDescription)
+                }
+            }
+            textIndexing = nil
+        }
+    }
+
+    private func saveRecognizedText(_ text: String, for id: UUID) throws {
+        // The capture may have been removed while its text was being read.
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        var updatedItems = items
+        updatedItems[index].recognizedText = text
+        try commit(updatedItems)
     }
 
     private func loadHistory(allowMissingIndex: Bool) throws {
@@ -208,6 +261,7 @@ final class CaptureStore: ObservableObject {
         try commit([item] + items, creating: file) {
             try ImageOutput.data(image, format: "PNG").write(to: file, options: .atomic)
         }
+        indexPendingText()
         return item
     }
 
