@@ -25,15 +25,65 @@ struct AnnotationCanvasRepresentable: NSViewRepresentable {
 }
 
 final class AnnotationScrollView: NSScrollView {
+    private var previousScale: CGFloat?
+    private var previousCanvasBounds: CGRect?
+    private var zoomAnchor: (image: CGPoint, viewport: CGPoint)?
+
     override func layout() {
         super.layout()
         guard let canvas = documentView as? AnnotationCanvasView, let model = canvas.model else { return }
-        let size = canvas.layoutCanvasBounds.size
+        let canvasBounds = canvas.layoutCanvasBounds
+        let size = canvasBounds.size
         let available = contentView.bounds.size
+        let scale = model.zoom == 0 ? AnnotationCanvasView.fitScale(for: size, in: available) : model.zoom
+        // Controls zoom around the visible center; a pinch supplies the pointer instead.
+        let center = CGPoint(x: available.width / 2, y: available.height / 2)
+        var anchor = zoomAnchor
+        if anchor == nil, let previousScale, let previousCanvasBounds, previousScale != scale {
+            anchor = (CGPoint(
+                x: previousCanvasBounds.minX + (contentView.bounds.minX + center.x - (canvas.bounds.width - previousCanvasBounds.width * previousScale) / 2) / previousScale,
+                y: previousCanvasBounds.minY + (contentView.bounds.minY + center.y - (canvas.bounds.height - previousCanvasBounds.height * previousScale) / 2) / previousScale), center)
+        }
+        zoomAnchor = nil
         let documentSize = model.zoom == 0 ? available : CGSize(width: max(available.width, size.width * model.zoom + 48), height: max(available.height, size.height * model.zoom + 48))
         if canvas.frame.size != documentSize { canvas.setFrameSize(documentSize) }
+        canvas.synchronizeTextEditor()
+        if model.zoom == 0 {
+            contentView.scroll(to: .zero)
+        } else if let anchor {
+            let point = canvas.viewPoint(anchor.image)
+            let proposed = CGRect(x: point.x - anchor.viewport.x, y: point.y - anchor.viewport.y, width: available.width, height: available.height)
+            contentView.scroll(to: contentView.constrainBoundsRect(proposed).origin)
+        }
+        reflectScrolledClipView(contentView)
+        previousScale = scale
+        previousCanvasBounds = canvasBounds
+        // Layout can run inside a SwiftUI update. Publish the fitted percentage afterwards.
+        let fitScale = AnnotationCanvasView.fitScale(for: size, in: available)
+        DispatchQueue.main.async { [weak self, weak model] in
+            guard let self, let model,
+                  (self.documentView as? AnnotationCanvasView)?.model === model else { return }
+            model.updateFitZoom(fitScale)
+        }
+        canvas.refreshPointerFeedback()
         canvas.needsLayout = true
         canvas.needsDisplay = true
+    }
+
+    override func magnify(with event: NSEvent) {
+        guard let canvas = documentView as? AnnotationCanvasView, let model = canvas.model,
+              !canvas.isDraggingAnnotation, event.magnification.isFinite, event.magnification != 0 else { return }
+        // Resolve any pending control or window-size change before mapping the pointer.
+        layoutSubtreeIfNeeded()
+        let scale = canvas.currentScale
+        // A large image can fit below the manual minimum. Pinching out must not enlarge it.
+        guard event.magnification > 0 || scale > AnnotationEditorModel.minimumZoom else { return }
+        let location = canvas.convert(event.locationInWindow, from: nil)
+        guard let point = canvas.imagePoint(location, requireInside: false, clampToImage: false) else { return }
+        zoomAnchor = (point, CGPoint(x: location.x - contentView.bounds.minX, y: location.y - contentView.bounds.minY))
+        model.setZoom(scale * max(0.01, 1 + event.magnification))
+        needsLayout = true
+        layoutSubtreeIfNeeded()
     }
 }
 
@@ -77,6 +127,8 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
     private let previewRenderer = AnnotationPreviewRenderer()
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
+    var isDraggingAnnotation: Bool { dragStart != nil }
+    var currentScale: CGFloat { updateImageGeometry(); return imageScale }
 
     var layoutCanvasBounds: CGRect {
         guard let model else { return .zero }
@@ -143,9 +195,13 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
         guard let model else { return }
         let canvasBounds = layoutCanvasBounds
         let size = canvasBounds.size
-        imageScale = model.zoom == 0 ? max(0.01, min((bounds.width - 48) / size.width, (bounds.height - 48) / size.height)) : model.zoom
+        imageScale = model.zoom == 0 ? Self.fitScale(for: size, in: bounds.size) : model.zoom
         renderedImageRect = CGRect(x: (bounds.width - size.width * imageScale) / 2, y: (bounds.height - size.height * imageScale) / 2, width: size.width * imageScale, height: size.height * imageScale)
         displayedImageRect = CGRect(x: renderedImageRect.minX - canvasBounds.minX * imageScale, y: renderedImageRect.minY - canvasBounds.minY * imageScale, width: model.pixelSize.width * imageScale, height: model.pixelSize.height * imageScale)
+    }
+
+    static func fitScale(for size: CGSize, in viewport: CGSize) -> CGFloat {
+        min(AnnotationEditorModel.maximumZoom, max(1, viewport.width - 48) / max(1, size.width), max(1, viewport.height - 48) / max(1, size.height))
     }
 
     func synchronizeTextEditor() {
@@ -322,10 +378,10 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
     private func viewRect(_ rect: CGRect, scale: CGFloat) -> CGRect {
         CGRect(x: displayedImageRect.minX + rect.minX * scale, y: displayedImageRect.minY + rect.minY * scale, width: rect.width * scale, height: rect.height * scale)
     }
-    private func viewPoint(_ point: CGPoint) -> CGPoint {
+    func viewPoint(_ point: CGPoint) -> CGPoint {
         viewRect(CGRect(origin: point, size: .zero), scale: imageScale).origin
     }
-    private func imagePoint(_ point: CGPoint, requireInside: Bool, clampToImage: Bool = true) -> CGPoint? {
+    func imagePoint(_ point: CGPoint, requireInside: Bool, clampToImage: Bool = true) -> CGPoint? {
         guard let model, displayedImageRect.width > 0, displayedImageRect.height > 0,
               !requireInside || displayedImageRect.contains(point) else { return nil }
         let imagePoint = CGPoint(x: (point.x - displayedImageRect.minX) / imageScale, y: (point.y - displayedImageRect.minY) / imageScale)
@@ -349,6 +405,9 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
         guard dragStart == nil, hoveredAnnotationID != nil else { return }
         hoveredAnnotationID = nil
         needsDisplay = true
+    }
+    override func magnify(with event: NSEvent) {
+        enclosingScrollView?.magnify(with: event)
     }
     override func mouseDown(with event: NSEvent) {
         updateImageGeometry()
@@ -442,6 +501,10 @@ private final class AnnotationTextView: NSTextView {
     let annotationLayout: AnnotationTextLayout
     private let textUndoManager = UndoManager()
     override var undoManager: UndoManager? { textUndoManager }
+
+    override func magnify(with event: NSEvent) {
+        enclosingScrollView?.magnify(with: event)
+    }
 
     init(annotation: EditorAnnotation) {
         annotationLayout = AnnotationTextLayout(annotation)
