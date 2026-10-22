@@ -82,6 +82,7 @@ public final class AnnotationEditorWindow: NSWindowController, NSWindowDelegate 
     func handleKeyEvent(_ event: NSEvent) -> Bool {
         guard !shortcuts.isRecordingShortcut else { return false }
         let action = shortcuts.action(for: event, scope: .editor)
+        if action == nil, handleZoomShortcut(event) { return true }
         if let window, Self.isEditingText(in: window), action != .editorSave, action != .editorSaveAs { return false }
         if let action {
             switch action {
@@ -149,6 +150,24 @@ public final class AnnotationEditorWindow: NSWindowController, NSWindowDelegate 
             return true
         }
         return false
+    }
+
+    private func handleZoomShortcut(_ event: NSEvent) -> Bool {
+        let modifiers = ShortcutBinding(event: event).appKitModifiers
+        guard let characters = event.characters?.lowercased() else { return false }
+        if characters == "+" || characters == "=" {
+            guard modifiers == .command || modifiers == [.command, .shift] else { return false }
+            editorModel.zoomIn()
+        } else if characters == "-", modifiers == .command {
+            editorModel.zoomOut()
+        } else if characters == "0", modifiers == .command {
+            editorModel.fitToWindow()
+        } else if characters == "1", modifiers == .command {
+            editorModel.setZoom(1)
+        } else {
+            return false
+        }
+        return true
     }
 
     func saveAndClose() {
@@ -273,7 +292,11 @@ final class AnnotationEditorModel: ObservableObject {
     @Published private(set) var cornerRadius: CGFloat = 18 {
         didSet { if cornerRadius != oldValue { scheduleImageChange() } }
     }
+    static let minimumZoom: CGFloat = 0.1
+    static let maximumZoom: CGFloat = 8
     @Published var zoom: CGFloat = 0
+    @Published private(set) var fitZoom: CGFloat = 1
+    var actualZoom: CGFloat { zoom == 0 ? fitZoom : zoom }
     @Published var annotations: [EditorAnnotation] = [] {
         didSet { if annotations != oldValue { scheduleImageChange() } }
     }
@@ -310,6 +333,30 @@ final class AnnotationEditorModel: ObservableObject {
         self.sourceURL = sourceURL
         self.defaults = defaults
         savedState = state()
+    }
+
+    func updateFitZoom(_ scale: CGFloat) {
+        guard scale.isFinite, scale > 0, fitZoom != scale else { return }
+        fitZoom = scale
+    }
+
+    func setZoom(_ scale: CGFloat) {
+        guard scale.isFinite else { return }
+        let clamped = min(Self.maximumZoom, max(Self.minimumZoom, scale))
+        if zoom != clamped { zoom = clamped }
+    }
+
+    func zoomIn() {
+        setZoom(min(Self.maximumZoom, actualZoom * 1.25))
+    }
+
+    func zoomOut() {
+        guard actualZoom > Self.minimumZoom else { return }
+        setZoom(max(Self.minimumZoom, actualZoom / 1.25))
+    }
+
+    func fitToWindow() {
+        if zoom != 0 { zoom = 0 }
     }
 
     private func scheduleImageChange() {
@@ -907,7 +954,27 @@ private struct AnnotationEditorRoot: View {
     }
     private var footer: some View {
         HStack(spacing: 10) {
-            Menu { Button("Fit") { model.zoom = 0 }; ForEach([CGFloat(0.5), 1, 2], id: \.self) { scale in Button("\(Int(scale * 100))%") { model.zoom = scale } } } label: { Text(model.zoom == 0 ? "Fit" : "\(Int(model.zoom * 100))%").font(.system(.caption, design: .rounded).weight(.semibold)).frame(width: 58) }.fixedSize().help("Zoom level")
+            HStack(spacing: 5) {
+                Button { model.zoomOut() } label: { Image(systemName: "minus.magnifyingglass") }
+                    .disabled(model.actualZoom <= AnnotationEditorModel.minimumZoom)
+                    .accessibilityLabel("Zoom out").help("Zoom out (⌘−)")
+                Menu {
+                    Button("Fit (⌘0)") { model.fitToWindow() }
+                    ForEach([CGFloat(0.5), 1, 2], id: \.self) { scale in
+                        Button("\(Int(scale * 100))%\(scale == 1 ? " (⌘1)" : "")") { model.setZoom(scale) }
+                    }
+                } label: {
+                    Text("\(Int((model.actualZoom * 100).rounded()))%")
+                        .font(.system(.caption, design: .rounded).weight(.semibold).monospacedDigit())
+                        .frame(width: 42)
+                        .accessibilityLabel("Zoom \(Int((model.actualZoom * 100).rounded())) percent")
+                }.menuStyle(.borderlessButton).fixedSize().help("Zoom level; choose Fit, 50%, 100%, or 200%")
+                Button { model.zoomIn() } label: { Image(systemName: "plus.magnifyingglass") }
+                    .disabled(model.actualZoom >= AnnotationEditorModel.maximumZoom)
+                    .accessibilityLabel("Zoom in").help("Zoom in (⌘+)")
+                Button("Fit") { model.fitToWindow() }.help("Fit image to window (⌘0)")
+                Button("100%") { model.setZoom(1) }.help("Actual size (⌘1)")
+            }.buttonStyle(.bordered).fixedSize()
             Text("\(Int(model.canvasBounds.width)) × \(Int(model.canvasBounds.height)) px").font(.caption).foregroundStyle(.secondary)
             Spacer()
             Button { model.flushImageChange(); onCopy(model.renderedImage()) } label: { Label("Copy", systemImage: "doc.on.doc") }.help("Copy rendered image (\(shortcuts.label(for: .editorCopyScreenshot)))")
@@ -917,7 +984,8 @@ private struct AnnotationEditorRoot: View {
     private var helpPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Annotation shortcuts").font(.title2.bold())
-            Text("Move \(shortcuts.label(for: .moveTool))   Crop \(shortcuts.label(for: .cropTool))   Draw \(shortcuts.label(for: .drawTool))   Line \(shortcuts.label(for: .lineTool))\nText \(shortcuts.label(for: .textTool))   Arrow \(shortcuts.label(for: .arrowTool))   Counter \(shortcuts.label(for: .counterTool))   Ellipse \(shortcuts.label(for: .ellipseTool))\nRedact \(shortcuts.label(for: .redactionTool))   Rectangle \(shortcuts.label(for: .rectangleTool))   Filled rectangle \(shortcuts.label(for: .filledRectangleTool))   Pixelate \(shortcuts.label(for: .pixelateTool))\nBackground \(shortcuts.label(for: .backgroundTool))   Smaller/larger \(shortcuts.label(for: .decreaseToolSize))/\(shortcuts.label(for: .increaseToolSize))\nCopy object \(shortcuts.label(for: .editorCopyObject))   Duplicate \(shortcuts.label(for: .editorDuplicate))   Save \(shortcuts.label(for: .editorSave))   Save as \(shortcuts.label(for: .editorSaveAs))\nCopy image \(shortcuts.label(for: .editorCopyScreenshot))   Print \(shortcuts.label(for: .editorPrint))   Pin \(shortcuts.label(for: .editorPin))\nUndo ⌘Z   Redo ⇧⌘Z   Delete Remove   Escape Select")
+            Text("Move \(shortcuts.label(for: .moveTool))   Crop \(shortcuts.label(for: .cropTool))   Draw \(shortcuts.label(for: .drawTool))   Line \(shortcuts.label(for: .lineTool))\nText \(shortcuts.label(for: .textTool))   Arrow \(shortcuts.label(for: .arrowTool))   Counter \(shortcuts.label(for: .counterTool))   Ellipse \(shortcuts.label(for: .ellipseTool))\nRedact \(shortcuts.label(for: .redactionTool))   Rectangle \(shortcuts.label(for: .rectangleTool))   Filled rectangle \(shortcuts.label(for: .filledRectangleTool))   Pixelate \(shortcuts.label(for: .pixelateTool))\nBackground \(shortcuts.label(for: .backgroundTool))   Smaller/larger \(shortcuts.label(for: .decreaseToolSize))/\(shortcuts.label(for: .increaseToolSize))\nZoom in/out ⌘+/⌘−   Fit ⌘0   Actual size ⌘1\nCopy object \(shortcuts.label(for: .editorCopyObject))   Duplicate \(shortcuts.label(for: .editorDuplicate))   Save \(shortcuts.label(for: .editorSave))   Save as \(shortcuts.label(for: .editorSaveAs))\nCopy image \(shortcuts.label(for: .editorCopyScreenshot))   Print \(shortcuts.label(for: .editorPrint))   Pin \(shortcuts.label(for: .editorPin))\nUndo ⌘Z   Redo ⇧⌘Z   Delete Remove   Escape Select")
+            Text("Pinch to zoom. Use two-finger scrolling to move around the image.").foregroundStyle(.secondary)
             Text("Drawing tools stay active, so you can add one annotation after another; Crop returns to the pointer once applied. New annotations stay selected. With a drawing tool, hover any annotation to show its handles, then drag a handle to edit it or drag its visible stroke or fill to move it. Dragging empty canvas, including inside an outlined shape, draws a new annotation. Hold Shift while drawing to snap lines and arrows to 45° increments, make rectangles square, or make ellipses circular. With the pointer, drag empty canvas space to select multiple annotations, then drag any selected annotation to move the group. Hold Shift to add to the selection. Drag an arrow endpoint to adjust it, or the middle handle to bend it; double-click the middle handle to straighten it. Drag the arrow itself to move it. Click with Text to type on the image; double-click existing text to edit it. Drag shape corners to resize rectangles, ellipses, freehand drawings, numbered steps, redactions, and pixelation regions; drag line endpoints to adjust them. Color and size controls update selected annotations. Drag a text corner to resize. Return finishes editing, Shift-Return adds a line. Crop applies when you finish the crop selection.").foregroundStyle(.secondary)
             HStack { Spacer(); Button("Close") { showHelp = false }.keyboardShortcut(.defaultAction) }
         }.padding(24).frame(width: 420)
