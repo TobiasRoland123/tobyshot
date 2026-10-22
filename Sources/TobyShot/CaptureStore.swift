@@ -135,6 +135,8 @@ final class CaptureStore: ObservableObject {
     private let indexURL: URL
     private let readHistory: (URL) throws -> Data
     private var thumbnails: [UUID: NSImage] = [:]
+    private let thumbnailLoader = ThumbnailLoader()
+    private var thumbnailGeneration = UUID()
     private var recognizeText: TextRecognizer?
     private var textIndexing: Task<Void, Never>?
     // Captures whose text could not be read are retried on the next launch.
@@ -222,6 +224,7 @@ final class CaptureStore: ObservableObject {
             let loadedItems = hasIndex ? try JSONDecoder().decode([CaptureItem].self, from: readHistory(indexURL)) : []
             let existingItems = loadedItems.filter { FileManager.default.fileExists(atPath: url(for: $0).path) }
             thumbnails.removeAll()
+            thumbnailGeneration = UUID()
             historyLoadState = .loaded(existingItems)
         } catch {
             let recoveryError = TobyError.message("TobyShot couldn’t load your capture library. Your existing history has been kept and library changes are paused. Restore access to the history file, or restore it from a backup, then choose Retry in the library.\n\nHistory file: \(indexURL.path)\n\n\(error.localizedDescription)")
@@ -237,15 +240,14 @@ final class CaptureStore: ObservableObject {
     func url(for item: CaptureItem) -> URL { directory.appendingPathComponent(item.filename) }
     func image(for item: CaptureItem) -> NSImage? { NSImage(contentsOf: url(for: item)) }
 
-    func thumbnail(for item: CaptureItem) -> NSImage? {
+    func thumbnail(for item: CaptureItem) async -> NSImage? {
+        guard item.kind == .image, !Task.isCancelled else { return nil }
         if let image = thumbnails[item.id] { return image }
-        guard item.kind == .image,
-              let source = CGImageSourceCreateWithURL(url(for: item) as CFURL, nil),
-              let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceThumbnailMaxPixelSize: 720,
-                kCGImageSourceCreateThumbnailWithTransform: true
-              ] as CFDictionary) else { return nil }
+        let generation = thumbnailGeneration
+        guard let cg = await thumbnailLoader.load(url: url(for: item)),
+              !Task.isCancelled, generation == thumbnailGeneration,
+              historyLoadError != nil || items.contains(where: { $0.id == item.id }) else { return nil }
+        if let image = thumbnails[item.id] { return image }
         let result = NSImage(cgImage: cg, size: .zero)
         thumbnails[item.id] = result
         return result
@@ -374,6 +376,23 @@ final class CaptureStore: ObservableObject {
         guard FileManager.default.fileExists(atPath: file.path) else { return }
         do { try FileManager.default.removeItem(at: file) }
         catch { NSLog("TobyShot history cleanup at %@: %@", file.path, error.localizedDescription) }
+    }
+}
+
+// Serialize PNG decoding away from the main actor so newly visible tiles do not
+// block scrolling or decode many full-size captures at once.
+private actor ThumbnailLoader {
+    func load(url: URL) -> CGImage? {
+        guard !Task.isCancelled else { return nil }
+        return autoreleasepool {
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+            return CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: 720,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true
+            ] as CFDictionary)
+        }
     }
 }
 
