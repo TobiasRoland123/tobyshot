@@ -218,14 +218,7 @@ struct LibraryView: View {
     private func captureTile(_ item: CaptureItem) -> some View {
         Button { app.annotate(item) } label: {
             VStack(alignment: .leading, spacing: 0) {
-                ZStack {
-                    Color.white.opacity(0.025)
-                    if let image = store.thumbnail(for: item) {
-                        Image(nsImage: image).resizable().scaledToFit().padding(10)
-                    } else {
-                        VStack(spacing: 10) { Image(systemName: "play.circle.fill").font(.system(size: 34)).foregroundStyle(studioAccent); Text("Screen recording").font(.system(size: 11)).foregroundStyle(.secondary) }
-                    }
-                }.frame(height: 145).clipped()
+                CaptureThumbnail(store: store, item: item).frame(height: 145).clipped()
                 VStack(alignment: .leading, spacing: 6) {
                     Text(item.title).font(.system(size: 11, weight: .medium)).lineLimit(1)
                     HStack { Text(item.date, style: .relative); Spacer(); Text(item.dimensions) }.font(.system(size: 9)).foregroundStyle(.tertiary)
@@ -259,6 +252,29 @@ struct LibraryView: View {
             Text("TobyShot 0.1").font(.system(size: 9)).foregroundStyle(.tertiary)
         }.padding(.horizontal, 30).frame(height: 35)
             .overlay(alignment: .top) { Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1) }
+    }
+}
+
+private struct CaptureThumbnail: View {
+    let store: CaptureStore
+    let item: CaptureItem
+    @State private var image: NSImage?
+
+    var body: some View {
+        ZStack {
+            Color.white.opacity(0.025)
+            if let image {
+                Image(nsImage: image).resizable().scaledToFit().padding(10)
+            } else if item.kind == .video {
+                VStack(spacing: 10) { Image(systemName: "play.circle.fill").font(.system(size: 34)).foregroundStyle(studioAccent); Text("Screen recording").font(.system(size: 11)).foregroundStyle(.secondary) }
+            } else {
+                Image(systemName: "photo").font(.system(size: 28, weight: .ultraLight)).foregroundStyle(.tertiary)
+            }
+        }.task(id: item.id) {
+            image = nil
+            let loaded = await store.thumbnail(for: item)
+            if !Task.isCancelled { image = loaded }
+        }
     }
 }
 

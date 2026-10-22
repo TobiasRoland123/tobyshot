@@ -15,7 +15,7 @@ struct CaptureHistoryRecoveryTests {
         try malformedHistoryBlocksEveryMutationAndRetryRestoresTheLibrary(corruption: .incompatibleEntry)
     }
 
-    @Test func retryPublishesOneCompleteSnapshotAfterFilteringMissingFilesAndClearingThumbnails() throws {
+    @Test func retryPublishesOneCompleteSnapshotAfterFilteringMissingFilesAndClearingThumbnails() async throws {
         Preferences.register()
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -27,7 +27,7 @@ struct CaptureHistoryRecoveryTests {
         try Data("invalid history".utf8).write(to: history)
         let blocked = CaptureStore(directory: directory)
         #expect(blocked.historyLoadError != nil)
-        #expect(try #require(blocked.thumbnail(for: prior)).size == NSSize(width: 4, height: 3))
+        #expect(try #require(await blocked.thumbnail(for: prior)).size == NSSize(width: 4, height: 3))
         try ImageOutput.data(fixture(width: 8, height: 6), format: "PNG").write(to: blocked.url(for: prior), options: .atomic)
         let restoredHistory = try JSONEncoder().encode([prior, missing])
         try restoredHistory.write(to: history, options: .atomic)
@@ -40,7 +40,6 @@ struct CaptureHistoryRecoveryTests {
                 return
             }
             #expect(items == [prior])
-            #expect(blocked.thumbnail(for: prior)?.size == NSSize(width: 8, height: 6))
         }
 
         try blocked.retryHistoryLoad()
@@ -48,6 +47,7 @@ struct CaptureHistoryRecoveryTests {
         #expect(publications.count == 1)
         #expect(blocked.items == [prior])
         #expect(blocked.historyLoadError == nil)
+        #expect(await blocked.thumbnail(for: prior)?.size == NSSize(width: 8, height: 6))
         #expect(try Data(contentsOf: history) == restoredHistory)
         // A retry on an already loaded store must not republish its state.
         try blocked.retryHistoryLoad()

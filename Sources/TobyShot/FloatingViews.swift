@@ -43,6 +43,7 @@ private struct QuickAccessView: View {
     @ObservedObject var app: AppCoordinator
     let hover: (Bool) -> Void
     let close: () -> Void
+    @State private var thumbnail: NSImage?
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -51,12 +52,12 @@ private struct QuickAccessView: View {
                 Spacer()
                 Button(action: close) { Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary) }.buttonStyle(.plain)
             }.padding(.horizontal, 12).frame(height: 32)
-            if let image = app.store.thumbnail(for: item) {
+            if let image = thumbnail {
                 DraggableCapture(image: image, file: app.store.url(for: item), onOpen: { app.annotate(item); close() }, onDragEnd: {
                     if Preferences.bool("overlayCloseAfterDrag") && !NSEvent.modifierFlags.contains(.option) { close() }
                 }).frame(maxWidth: .infinity, maxHeight: .infinity).padding(.horizontal, 8)
             } else {
-                Button { app.annotate(item) } label: { Image(systemName: "play.circle.fill").font(.system(size: 42)).frame(maxWidth: .infinity, maxHeight: .infinity) }.buttonStyle(.plain)
+                Button { app.annotate(item) } label: { Image(systemName: item.kind == .image ? "photo" : "play.circle.fill").font(.system(size: 42)).frame(maxWidth: .infinity, maxHeight: .infinity) }.buttonStyle(.plain)
             }
             HStack(spacing: 13) {
                 action("square.and.arrow.down", "Save") { app.save(item, ask: NSEvent.modifierFlags.contains(.option)) }
@@ -72,6 +73,11 @@ private struct QuickAccessView: View {
         }.background(.ultraThickMaterial, in: RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.16)))
             .padding(1).onHover(perform: hover)
+            .task(id: item.id) {
+                thumbnail = nil
+                let loaded = await app.store.thumbnail(for: item)
+                if !Task.isCancelled { thumbnail = loaded }
+            }
     }
     private func action(_ icon: String, _ help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) { Image(systemName: icon).font(.system(size: 14)).frame(height: 23) }.buttonStyle(.plain).help(help)
