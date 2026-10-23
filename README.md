@@ -1,8 +1,6 @@
 # TobyShot
 
 A free macOS app for screenshots, screen recordings, annotations, and text recognition. Captures stay on your Mac. Requires **macOS 15 or newer**, on Apple silicon or Intel.
-https://github.com/user-attachments/assets/06a5128c-a73b-4707-a669-34b64b28c16f
-
 
 ## Install
 
