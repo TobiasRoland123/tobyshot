@@ -42,8 +42,11 @@ If capture still fails, quit TobyShot, remove only its entry from **Screen & Sys
 - Keep recent captures stacked in Quick Access, and drag any of them into another app.
 - Record your screen with optional system audio and microphone.
 - Recognize text, search local capture history by title or by the text inside screenshots, and customize shortcuts.
+- Open the latest screenshot in Codex with a configurable global shortcut.
 
 Exports go to `~/Documents/Captures` by default. If you used an earlier version that saved to `~/Pictures/TobyShot`, TobyShot keeps using that folder until you choose another one. Closing the library keeps TobyShot running in the menu bar.
+
+To use Codex, assign **Open Latest Screenshot in Codex** under **Settings → Shortcuts → General**. It starts unassigned and can be changed or disabled there. The action opens the latest screenshot from history, skipping newer recordings, in a new Codex composer for you to add a prompt and send. You can also run it from TobyShot’s menu bar menu. This requires a Codex Desktop version that supports opening image files.
 
 ## Updates
 

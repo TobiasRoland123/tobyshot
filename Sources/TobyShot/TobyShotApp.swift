@@ -228,6 +228,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         menu.addItem(.separator())
         addShortcutItem(menu, "Open Image…", #selector(openImage), shortcut: .openImage)
         addShortcutItem(menu, "Open Capture History", #selector(showLibrary), shortcut: .captureHistory)
+        addShortcutItem(menu, ShortcutAction.openLatestScreenshotInCodex.title,
+                        #selector(openLatestScreenshotInCodex), shortcut: .openLatestScreenshotInCodex)
         if !coordinator.store.items.isEmpty {
             let recent = NSMenu()
             for item in coordinator.store.items.prefix(5) {
@@ -259,6 +261,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         addShortcutItem(file, "Capture Window", #selector(captureWindow), shortcut: .captureWindow)
         addShortcutItem(file, "Start / Stop Recording", #selector(recordArea), shortcut: .recordScreen)
         addShortcutItem(file, "Open Capture History", #selector(showLibrary), shortcut: .captureHistory)
+        addShortcutItem(file, ShortcutAction.openLatestScreenshotInCodex.title,
+                        #selector(openLatestScreenshotInCodex), shortcut: .openLatestScreenshotInCodex)
         file.addItem(NSMenuItem(title: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
         let edit = NSMenu(title: "Edit"); let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: ""); editItem.submenu = edit; main.addItem(editItem)
         for (title, action, key) in [("Undo", Selector(("undo:")), "z"), ("Redo", Selector(("redo:")), "Z"), ("Cut", #selector(NSText.cut(_:)), "x"), ("Copy", #selector(NSText.copy(_:)), "c"), ("Paste", #selector(NSText.paste(_:)), "v"), ("Select All", #selector(NSText.selectAll(_:)), "a")] {
@@ -317,6 +321,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         case .openImage: openImage()
         case .openClipboard: pasteImage()
         case .captureHistory: showLibrary()
+        case .openLatestScreenshotInCodex: coordinator.openLatestScreenshotInCodex()
         case .restoreLastCapture: coordinator.restoreLastCapture()
         case .captureTimer: captureTimer()
         case .capturePreviousArea: coordinator.capture(.area, previousArea: true)
@@ -338,6 +343,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         default: break // Editor actions are dispatched only by the annotation window.
         }
     }
+    @objc private func openLatestScreenshotInCodex() { coordinator.openLatestScreenshotInCodex() }
     @objc private func showAllInOne() {
         if coordinator.isBusy { return }
         captureLauncher?.close()

@@ -25,6 +25,7 @@ enum ShortcutAction: UInt32, CaseIterable, Identifiable {
     case captureText, captureTextWithLines, captureTextWithoutLines
     case toggleOverlays, saveOverlays, closeOverlays
     case choosePin, togglePins, closePins, pinLastScreenshot, openClipboard, annotateLastScreenshot, capturePreviousArea
+    case openLatestScreenshotInCodex = 27
     case editorCopyObject = 100, editorDuplicate, editorSave, editorSaveAs, editorCopyScreenshot, editorPrint, editorPin
     case increaseToolSize = 200, decreaseToolSize, backgroundTool, moveTool, cropTool, drawTool
     case lineTool, textTool, arrowTool, counterTool, ellipseTool, redactionTool, rectangleTool, filledRectangleTool, pixelateTool
@@ -35,6 +36,7 @@ enum ShortcutAction: UInt32, CaseIterable, Identifiable {
         switch self {
         case .allInOne: return "All-in-One"
         case .captureHistory: return "Open Capture History"
+        case .openLatestScreenshotInCodex: return "Open Latest Screenshot in Codex"
         case .restoreLastCapture: return "Restore Last Capture"
         case .captureArea: return "Capture Area"
         case .capturePreviousArea: return "Capture Previous Area"
@@ -86,7 +88,7 @@ enum ShortcutAction: UInt32, CaseIterable, Identifiable {
 
     var group: ShortcutGroup {
         switch self {
-        case .allInOne, .captureHistory, .restoreLastCapture: return .general
+        case .allInOne, .captureHistory, .restoreLastCapture, .openLatestScreenshotInCodex: return .general
         case .captureArea, .captureFullScreen, .captureWindow, .capturePreviousArea, .captureTimer,
              .captureAreaCopy, .captureAreaSave, .captureAreaAnnotate, .captureAreaPin: return .screenshots
         case .recordScreen: return .recording
