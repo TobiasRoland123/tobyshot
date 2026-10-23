@@ -57,6 +57,115 @@ struct AreaSuggestionDetectorTests {
     }
 
     @Test(arguments: [1, 2])
+    func detectsDarkPaneAndFullWidthSectionsAroundDenseGlyphsAtNativeScale(scale: Int) throws {
+        let pane = CGRect(x: 38, y: 46, width: 824, height: 430)
+        let upperSection = CGRect(x: pane.minX, y: pane.minY, width: pane.width, height: 177)
+        let lowerSection = CGRect(x: pane.minX, y: 225, width: pane.width, height: pane.maxY - 225)
+        let display = try fixture(scale: scale) { context in
+            context.setFillColor(rgb(0.08, 0.09, 0.12))
+            context.fill(CGRect(x: 0, y: 0, width: 900, height: 600))
+            context.setFillColor(rgb(0.15, 0.16, 0.21))
+            context.fill(pane)
+            // A faint, thin separator spans the shared pane edges.
+            context.setFillColor(rgb(0.18, 0.19, 0.24))
+            context.fill(CGRect(x: pane.minX, y: 223, width: pane.width, height: 2))
+
+            // Generic text-like marks approach both outer edges without forming boxes.
+            context.setFillColor(rgb(0.24, 0.25, 0.30))
+            for row in 0..<9 {
+                let y = CGFloat(62 + row * 17)
+                for column in 0..<24 {
+                    let x = CGFloat(42 + column * 35)
+                    context.fill(CGRect(x: x, y: y, width: CGFloat(7 + column % 4), height: 9))
+                }
+            }
+            for row in 0..<10 {
+                let y = CGFloat(238 + row * 18)
+                for column in 0..<24 {
+                    let x = CGFloat(42 + column * 35)
+                    context.fill(CGRect(x: x, y: y, width: CGFloat(6 + column % 5), height: 10))
+                }
+            }
+        }
+        let expected = [pane, upperSection, lowerSection].map { global($0, display: display) }
+        let result = try detect(display)
+        #expect(Set(result) == Set(expected))
+    }
+
+    @Test(arguments: [1, 2])
+    func detectsShortFilledPromptChipsAtNativeScale(scale: Int) throws {
+        let compactChip = CGRect(x: 118, y: 136, width: 80, height: 18)
+        let longChip = CGRect(x: 210, y: 136, width: 180, height: 18)
+        let display = try fixture(scale: scale) { context in
+            context.setFillColor(rgb(0.08, 0.09, 0.12))
+            context.fill(CGRect(x: 0, y: 0, width: 900, height: 600))
+            context.setFillColor(rgb(0.20, 0.25, 0.29))
+            context.fill(compactChip)
+            context.setFillColor(rgb(0.24, 0.21, 0.30))
+            context.fill(longChip)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .medium),
+                .foregroundColor: NSColor.green,
+            ]
+            ("v2.0.0" as NSString).draw(at: CGPoint(x: compactChip.minX + 8, y: compactChip.minY + 1), withAttributes: attributes)
+            ("feature/example" as NSString).draw(at: CGPoint(x: longChip.minX + 8, y: longChip.minY + 1), withAttributes: attributes)
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        let expected = [compactChip, longChip].map { global($0, display: display) }
+        let result = try detect(display)
+        #expect(Set(result) == Set(expected))
+    }
+
+    @Test(arguments: [1, 2])
+    func detectsVeryWideShortFilledPanelAtNativeScale(scale: Int) throws {
+        let panel = CGRect(x: 40, y: 284, width: 820, height: 30)
+        let display = try fixture(scale: scale) { context in
+            context.setFillColor(rgb(0.08, 0.09, 0.12))
+            context.fill(CGRect(x: 0, y: 0, width: 900, height: 600))
+            context.setFillColor(rgb(0.15, 0.16, 0.21))
+            context.fill(panel)
+        }
+        #expect(try detect(display) == [global(panel, display: display)])
+    }
+
+    @Test(arguments: [1, 2])
+    func windowBoundsSupplyEdgesForSeparatedTerminalPanes(scale: Int) throws {
+        let upper = CGRect(x: 0, y: 0, width: 900, height: 280)
+        let lower = CGRect(x: 0, y: 280, width: 900, height: 320)
+        let display = try fixture(scale: scale) { context in
+            context.setFillColor(rgb(0.15, 0.16, 0.21))
+            context.fill(upper)
+            context.setFillColor(rgb(0.23, 0.24, 0.28))
+            context.fill(lower)
+            context.setFillColor(rgb(0.19, 0.20, 0.25))
+            context.fill(CGRect(x: 0, y: 80, width: 900, height: 2))
+        }
+        let frame = CGRect(origin: .zero, size: display.frame.size)
+        // A fully covered background window must not contribute imaginary edges.
+        let result = try AreaSuggestionDetector.detect(in: display, displayFrame: frame,
+            windows: [frame, CGRect(x: 100, y: 100, width: 500, height: 300)])
+        let expected = [upper, lower, CGRect(x: 0, y: 0, width: 900, height: 80),
+                        CGRect(x: 0, y: 82, width: 900, height: 198)]
+        #expect(Set(result) == Set(expected.map { global($0, display: display) }))
+    }
+
+    @Test func interiorGridlinesDoNotSplitTheirContainer() throws {
+        let rect = CGRect(x: 80, y: 70, width: 380, height: 250)
+        let display = try fixture { context in
+            context.setFillColor(rgb(0.15, 0.16, 0.21))
+            context.fill(rect)
+            context.setFillColor(rgb(0.25, 0.26, 0.31))
+            for y in stride(from: 110, through: 280, by: 34) {
+                context.fill(CGRect(x: 96, y: y, width: 348, height: 1))
+            }
+        }
+        let result = try detect(display)
+        #expect(result == [global(rect, display: display)])
+    }
+
+    @Test(arguments: [1, 2])
     func filledRoundedSurfaceDoesNotIncludeShadow(scale: Int) throws {
         let rect = CGRect(x: 80, y: 70, width: 380, height: 98)
         let display = try fixture(scale: scale) { context in
@@ -78,7 +187,8 @@ struct AreaSuggestionDetectorTests {
             context.fill(CGRect(x: rect.minX, y: rect.midY, width: rect.width, height: 2))
         }
         let result = try detect(display)
-        #expect(result == [global(rect, display: display)])
+        #expect(result.contains(global(rect, display: display)))
+        #expect(result.allSatisfy { global(rect, display: display).contains($0) })
     }
 
     @Test(arguments: [1, 2])
@@ -211,6 +321,10 @@ struct AreaSuggestionDetectorTests {
         context.addPath(CGPath(roundedRect: rect.insetBy(dx: borderWidth, dy: borderWidth),
                               cornerWidth: max(0, radius - borderWidth), cornerHeight: max(0, radius - borderWidth), transform: nil))
         context.fillPath()
+    }
+
+    private func rgb(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat) -> CGColor {
+        CGColor(red: red, green: green, blue: blue, alpha: 1)
     }
 
     private func detect(_ display: CaptureDisplayImage) throws -> [CGRect] {

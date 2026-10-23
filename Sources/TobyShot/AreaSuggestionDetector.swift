@@ -44,22 +44,45 @@ enum AreaSuggestionDetector {
                                   height: normalized.height * CGFloat(pixels.height))
             // Include short cards, bubbles, and controls while omitting icons
             // and text fragments. Check the final size after pixel refinement.
-            guard proposed.width / display.scale >= 60, proposed.height / display.scale >= 20,
-                  proposed.width / proposed.height < 20, proposed.height / proposed.width < 5,
+            guard proposed.width / display.scale >= 60, proposed.height / display.scale >= 10,
+                  proposed.height / proposed.width < 5,
                   rectangular(contour, bounds: normalized),
                   let rect = pixels.refine(proposed),
-                  rect.width / display.scale >= 64, rect.height / display.scale >= 24,
+                  rect.width / display.scale >= 64, rect.height / display.scale >= 14,
                   isVisible(rect, imageSize: CGSize(width: pixels.width, height: pixels.height),
                             displayFrame: displayFrame, windows: windows) else { continue }
             if !rectangles.contains(rect) { rectangles.append(rect) }
         }
-        // An apparent child sharing an edge with its parent may be clipped by a
-        // viewport. Keep the surrounding container, omit the uncertain child.
+        // Window geometry supplies the outer edges of panes that have only a
+        // horizontal/vertical separator, even when no closed contour survives.
+        let windowRects = windows.filter { window in
+            windows.first(where: { !$0.intersection(window).isEmpty }) == window
+        }.map { window in
+            CGRect(x: (window.minX - displayFrame.minX) * CGFloat(pixels.width) / displayFrame.width,
+                   y: (window.minY - displayFrame.minY) * CGFloat(pixels.height) / displayFrame.height,
+                   width: window.width * CGFloat(pixels.width) / displayFrame.width,
+                   height: window.height * CGFloat(pixels.height) / displayFrame.height).integral
+        }.filter {
+            isVisible($0, imageSize: CGSize(width: pixels.width, height: pixels.height),
+                      displayFrame: displayFrame, windows: windows, allowWindowEdges: true)
+        }
+        // A long separator can define a pane even when text merges with its
+        // outline in the reduced contour image. Keep the enclosing area too.
+        for parent in Set(rectangles + windowRects) {
+            for rect in pixels.subdivisions(in: parent, scale: display.scale) where
+                isVisible(rect, imageSize: CGSize(width: pixels.width, height: pixels.height),
+                          displayFrame: displayFrame, windows: windows, allowWindowEdges: true) {
+                if !rectangles.contains(rect) { rectangles.append(rect) }
+            }
+        }
+        // Vision can propose both sides of a faint border. Remove only near-
+        // identical outlines, not legitimate sections sharing their parent's edge.
+        let tolerance = max(2, display.scale * 2)
         rectangles = rectangles.filter { rect in
             !rectangles.contains { parent in
                 parent != rect && parent.contains(rect) &&
-                (abs(parent.minX - rect.minX) <= 2 || abs(parent.maxX - rect.maxX) <= 2 ||
-                 abs(parent.minY - rect.minY) <= 2 || abs(parent.maxY - rect.maxY) <= 2)
+                abs(parent.minX - rect.minX) <= tolerance && abs(parent.maxX - rect.maxX) <= tolerance &&
+                abs(parent.minY - rect.minY) <= tolerance && abs(parent.maxY - rect.maxY) <= tolerance
             }
         }
         return rectangles.map { globalRect($0, in: display) }
@@ -73,9 +96,12 @@ enum AreaSuggestionDetector {
                       width: pixels.width / xScale, height: pixels.height / yScale)
     }
 
-    static func isVisible(_ rect: CGRect, imageSize: CGSize, displayFrame: CGRect, windows: [CGRect]) -> Bool {
-        // A contour touching a display edge has no evidence of a complete boundary.
-        guard CGRect(origin: .zero, size: imageSize).insetBy(dx: 1, dy: 1).contains(rect) else { return false }
+    static func isVisible(_ rect: CGRect, imageSize: CGSize, displayFrame: CGRect, windows: [CGRect],
+                          allowWindowEdges: Bool = false) -> Bool {
+        // Pixel contours need visible margins. Separator-based panes can instead
+        // use the verified bounds of an entirely visible window at the screen edge.
+        let margin: CGFloat = allowWindowEdges ? 0 : 1
+        guard CGRect(origin: .zero, size: imageSize).insetBy(dx: margin, dy: margin).contains(rect) else { return false }
         let quartzRect = CGRect(x: displayFrame.minX + rect.minX * displayFrame.width / imageSize.width,
                                 y: displayFrame.minY + rect.minY * displayFrame.height / imageSize.height,
                                 width: rect.width * displayFrame.width / imageSize.width,
@@ -83,7 +109,7 @@ enum AreaSuggestionDetector {
         // The first intersecting window must own the entire rectangle. A front
         // window overlapping even the interior makes a background container unsafe.
         guard let owner = windows.first(where: { !$0.intersection(quartzRect).isEmpty }) else { return false }
-        return owner.insetBy(dx: 1, dy: 1).contains(quartzRect)
+        return owner.contains(quartzRect)
     }
 
     private static func rectangular(_ contour: VNContour, bounds: CGRect) -> Bool {
@@ -135,6 +161,68 @@ enum AreaSuggestionDetector {
                            hasBorder(at: bottom, from: left, to: right, vertical: false, lower: false, depth: radius, shortestSide: refinedSide)]
             guard borders.allSatisfy({ $0 }) || borders.allSatisfy({ !$0 }) else { return nil }
             return CGRect(x: left, y: top, width: right - left, height: bottom - top)
+        }
+
+        func subdivisions(in rect: CGRect, scale: CGFloat) -> [CGRect] {
+            guard rect.width / scale >= 160, rect.height / scale >= 48 else { return [] }
+            var result: [CGRect] = []
+            for vertical in [false, true] {
+                let start = Int(vertical ? rect.minX : rect.minY)
+                let end = Int(vertical ? rect.maxX : rect.maxY)
+                let alongStart = Int(vertical ? rect.minY : rect.minX) + max(1, Int(scale * 2))
+                let alongEnd = Int(vertical ? rect.maxY : rect.maxX) - max(1, Int(scale * 2)) - 1
+                // Include both ends: grid lines and underlines that stop inside
+                // the content must not split the surrounding container.
+                let samples = (0..<33).map { alongStart + (alongEnd - alongStart) * $0 / 32 }
+                func contrast(_ a: Int, _ b: Int, along: Int) -> Int {
+                    let first = (vertical ? along * width + a : a * width + along) * 4
+                    let second = (vertical ? along * width + b : b * width + along) * 4
+                    return (0..<3).map { abs(Int(bytes[first + $0]) - Int(bytes[second + $0])) }.max() ?? 0
+                }
+                func continuous(_ a: Int, _ b: Int) -> Bool {
+                    contrast(a, b, along: alongStart) >= 6 && contrast(a, b, along: alongEnd) >= 6 &&
+                    samples.filter { contrast(a, b, along: $0) >= 6 }.count >= 30
+                }
+                var bands: [(start: Int, end: Int, transition: Bool)] = []
+                var edge = start + max(2, Int(scale * 2))
+                while edge < end - max(2, Int(scale * 2)) {
+                    if Task.isCancelled { return [] }
+                    guard continuous(edge - 1, edge) else { edge += 1; continue }
+                    let first = edge
+                    let bandWidth = max(2, Int(scale * 3))
+                    var next = edge + 1
+                    // The two edges of a one-point divider are separated by
+                    // multiple pixels on Retina displays; treat them as one rule.
+                    while next < end && next - edge <= bandWidth {
+                        if continuous(next - 1, next) { edge = next }
+                        next += 1
+                    }
+                    // Broad gradients are not sharp separators.
+                    if edge - first <= bandWidth {
+                        bands.append((first, edge, continuous(first - 1, edge)))
+                    }
+                    edge += 1
+                }
+                func parts(from lower: Int, to upper: Int, cuts: [(start: Int, end: Int, transition: Bool)]) -> [CGRect] {
+                    guard !cuts.isEmpty else { return [] }
+                    let beginnings = [lower] + cuts.map(\.end)
+                    let endings = cuts.map(\.start) + [upper]
+                    return zip(beginnings, endings).compactMap { low, high in
+                        let part = vertical ? CGRect(x: low, y: Int(rect.minY), width: high - low, height: Int(rect.height)) :
+                            CGRect(x: Int(rect.minX), y: low, width: Int(rect.width), height: high - low)
+                        return part.width / scale >= 64 && part.height / scale >= 14 ? part : nil
+                    }
+                }
+                // Background changes separate panes. Thin rules divide content
+                // within each pane without discarding the pane's full bounds.
+                let panes = parts(from: start, to: end, cuts: bands.filter(\.transition))
+                result += panes
+                for pane in panes.isEmpty ? [rect] : panes {
+                    let low = Int(vertical ? pane.minX : pane.minY), high = Int(vertical ? pane.maxX : pane.maxY)
+                    result += parts(from: low, to: high, cuts: bands.filter { !$0.transition && $0.start > low && $0.end < high })
+                }
+            }
+            return result
         }
 
         private func hasBorder(at edge: Int, from start: Int, to end: Int, vertical: Bool, lower: Bool, depth: Int, shortestSide: Int) -> Bool {
