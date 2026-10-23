@@ -4,10 +4,6 @@ TobyShot is a free macOS app for taking screenshots, recording your screen, anno
 
 **[Download the latest release](https://github.com/TobiasRoland123/tobyshot/releases/latest)** · Requires macOS 15 or newer, on Apple silicon or Intel · [Installation steps](#install)
 
-[![TobyShot product demo: capture an area, annotate it with arrows, text and redaction, then find it again by searching the text inside it. Click to watch the 40-second video.](docs/media/tobyshot-product-poster.jpg)](docs/media/tobyshot-product.mp4)
-
-[Watch the 40-second demo (MP4, 21 MB)](docs/media/tobyshot-product.mp4)
-
 ## Features
 
 - **Capture:** grab an area across multiple monitors, a window, or the full screen with keyboard shortcuts, with an optional self-timer.
