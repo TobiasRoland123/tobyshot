@@ -16,10 +16,29 @@ struct RecordingTarget {
     let scale: CGFloat
 }
 
+struct PreviousCaptureArea {
+    let rect: CGRect
+    let displays: [CGDirectDisplayID: CGRect]
+
+    init(rect: CGRect, displays: [CGDirectDisplayID: CGRect]) {
+        self.rect = rect
+        self.displays = displays.filter { !$0.value.intersection(rect).isEmpty }
+    }
+
+    func validate(displays currentDisplays: [CGDirectDisplayID: CGRect]) throws {
+        guard displays.keys.allSatisfy({ currentDisplays[$0] != nil }) else {
+            throw TobyError.message("A display used for the previous capture is no longer connected. Capture a new area first.")
+        }
+        guard currentDisplays.filter({ !$0.value.intersection(rect).isEmpty }) == displays else {
+            throw TobyError.message("The display arrangement used for the previous capture has changed. Capture a new area first.")
+        }
+    }
+}
+
 @MainActor
 final class ScreenCaptureService {
     private let selector = RegionSelector()
-    private var previousArea: (displayID: CGDirectDisplayID, rect: CGRect)?
+    private var previousArea: PreviousCaptureArea?
 
     static var hasPermission: Bool { CGPreflightScreenCaptureAccess() }
 
@@ -79,23 +98,27 @@ final class ScreenCaptureService {
             let cg = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
             return CaptureResult(image: NSImage(cgImage: cg, size: CGSize(width: cg.width, height: cg.height)), scale: scale, isWindow: true)
         }
-        let snapshot = selection.snapshot
-        previousArea = (snapshot.display.displayID, selection.rect)
-        let pixels = CaptureGeometry.pixelRect(selection.rect, scale: snapshot.scale, bounds: CGRect(x: 0, y: 0, width: snapshot.image.width, height: snapshot.image.height))
-        guard let cropped = snapshot.image.cropping(to: pixels) else { throw TobyError.message("The selected area could not be captured.") }
-        return CaptureResult(image: NSImage(cgImage: cropped, size: CGSize(width: cropped.width, height: cropped.height)), scale: snapshot.scale, isWindow: false)
+        let result = try captureArea(selection.rect, snapshots: snapshots)
+        previousArea = PreviousCaptureArea(rect: selection.rect, displays: displayFrames(snapshots))
+        return result
     }
 
     func capturePreviousArea() async throws -> CaptureResult? {
         guard let previousArea else { throw TobyError.message("Capture an area first, then use Capture Previous Area.") }
         let content = try await content()
-        guard let snapshot = try await snapshots(content: content).first(where: { $0.display.displayID == previousArea.displayID }) else {
-            throw TobyError.message("The display used for the previous capture is no longer connected.")
-        }
-        let pixels = CaptureGeometry.pixelRect(previousArea.rect, scale: snapshot.scale,
-            bounds: CGRect(x: 0, y: 0, width: snapshot.image.width, height: snapshot.image.height))
-        guard !pixels.isEmpty, let cropped = snapshot.image.cropping(to: pixels) else { throw TobyError.message("The previous capture area is outside the display. Capture a new area first.") }
-        return CaptureResult(image: NSImage(cgImage: cropped, size: CGSize(width: cropped.width, height: cropped.height)), scale: snapshot.scale, isWindow: false)
+        let snapshots = try await snapshots(content: content)
+        try previousArea.validate(displays: displayFrames(snapshots))
+        return try captureArea(previousArea.rect, snapshots: snapshots)
+    }
+
+    private func captureArea(_ rect: CGRect, snapshots: [ScreenSnapshot]) throws -> CaptureResult {
+        try AreaCaptureComposition.capture(rect: rect, displays: snapshots.map {
+            CaptureDisplayImage(frame: $0.screen.frame, image: $0.image)
+        })
+    }
+
+    private func displayFrames(_ snapshots: [ScreenSnapshot]) -> [CGDirectDisplayID: CGRect] {
+        Dictionary(uniqueKeysWithValues: snapshots.map { ($0.display.displayID, $0.screen.frame) })
     }
 
     func recordingTarget(area: Bool) async throws -> RecordingTarget? {
@@ -103,8 +126,9 @@ final class ScreenCaptureService {
         guard let display = activeDisplay(in: content) else { throw TobyError.message("No display is available to record.") }
         if !area { return RecordingTarget(filter: displayFilter(display, content: content), rect: CGRect(origin: .zero, size: display.frame.size), scale: screen(for: display)?.backingScaleFactor ?? 2) }
         let snapshots = try await snapshots(content: content)
-        guard let selection = await selector.select(snapshots: snapshots, windows: [], instruction: "Drag to choose the recording area") else { return nil }
-        return RecordingTarget(filter: displayFilter(selection.snapshot.display, content: content), rect: selection.rect, scale: selection.snapshot.scale)
+        guard let selection = await selector.select(snapshots: snapshots, windows: [], instruction: "Drag to choose the recording area", spansDisplays: false) else { return nil }
+        return RecordingTarget(filter: displayFilter(selection.snapshot.display, content: content),
+                               rect: CaptureGeometry.localRect(selection.rect, in: selection.snapshot.screen.frame), scale: selection.snapshot.scale)
     }
 
     private func snapshots(content: SCShareableContent) async throws -> [ScreenSnapshot] {
@@ -126,6 +150,11 @@ final class ScreenCaptureService {
 }
 
 enum CaptureGeometry {
+    // Convert global bottom-left screen points to a display's top-left points.
+    static func localRect(_ rect: CGRect, in frame: CGRect) -> CGRect {
+        CGRect(x: rect.minX - frame.minX, y: frame.maxY - rect.maxY, width: rect.width, height: rect.height)
+    }
+
     static func pixelRect(_ rect: CGRect, scale: CGFloat, bounds: CGRect) -> CGRect {
         CGRect(x: rect.minX * scale, y: rect.minY * scale, width: rect.width * scale, height: rect.height * scale).integral.intersection(bounds)
     }
