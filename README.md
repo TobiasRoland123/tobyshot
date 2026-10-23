@@ -1,6 +1,45 @@
-# TobyShot
+# TobyShot: free screenshot and screen recording app for macOS
 
-A free macOS app for screenshots, screen recordings, annotations, and text recognition. Captures stay on your Mac. Requires **macOS 15 or newer**, on Apple silicon or Intel.
+TobyShot is a free macOS app for taking screenshots, recording your screen, annotating captures, and finding them again by the text inside them. It runs from the menu bar and keeps every capture on your Mac.
+
+**[Download the latest release](https://github.com/TobiasRoland123/tobyshot/releases/latest)** · Requires macOS 15 or newer, on Apple silicon or Intel · [Installation steps](#install)
+
+[![TobyShot product demo: capture an area, annotate it with arrows, text and redaction, then find it again by searching the text inside it. Click to watch the 40-second video.](docs/media/tobyshot-product-poster.jpg)](docs/media/tobyshot-product.mp4)
+
+[Watch the 40-second demo (MP4, 21 MB)](docs/media/tobyshot-product.mp4)
+
+## Features
+
+- **Capture:** grab an area across multiple monitors, a window, or the full screen with keyboard shortcuts, with an optional self-timer.
+- **Quick Access:** a preview appears after every capture so you can save, copy, annotate, pin, or read its text. Recent captures stay stacked there, and you can drag any of them into another app.
+- **Annotate:** add arrows that bend, shapes, freehand drawing, hand-drawn text, and numbered steps; redact or pixelate private details; crop; and add a background with padding. Paste screenshots into the annotation canvas with ⌘V, then move and resize them to make insets or side-by-side comparisons.
+- **Record:** record your screen with optional system audio and microphone.
+- **Search:** TobyShot recognizes the text in every screenshot on your Mac, so you can search your capture history by title or by the words inside a screenshot, and copy the text out.
+- **Codex:** open the latest screenshot in Codex with a configurable global shortcut.
+- **Customize:** change the shortcuts and choose where captures are saved.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/media/capture.jpg" alt="Capture Area selecting a revenue chart in a browser window, with a 748 × 445 size label and the area, all-in-one, full screen and self-timer shortcuts listed beside it."><br><b>Capture</b> an area, a window or the full screen.</td>
+    <td width="50%"><img src="docs/media/quick-access.jpg" alt="A captured revenue chart being dragged from Quick Access straight into a team chat."><br><b>Quick Access</b> lets you drag a capture straight into another app.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/media/annotate.jpg" alt="The annotation editor showing a settings page marked up with numbered steps, a curved arrow, a hand-drawn note, redacted and pixelated details, and a peach background with padding."><br><b>Annotate</b> with arrows, steps, hand-drawn text and redaction.</td>
+    <td width="50%"><img src="docs/media/search.jpg" alt="The TobyShot library searching for “password” and finding a screenshot of a welcome note, with the matching word highlighted and a Text match badge."><br><b>Search</b> your captures by the words inside them.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/media/record.jpg" alt="A screen recording in progress over a roadmap board, with a recording timer, a Stop button and toggles for system audio and microphone."><br><b>Record</b> your screen with system audio and microphone.</td>
+    <td width="50%"><img src="docs/media/pin.jpg" alt="A screenshot of a revenue chart pinned above a code editor, floating over every other window."><br><b>Pin</b> a screenshot so it floats above your work.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/media/shortcuts.jpg" alt="The TobyShot Shortcuts settings, listing capture, recording and annotation tool shortcuts that can each be changed."><br><b>Shortcuts</b> for every capture, tool and action.</td>
+    <td width="50%"><img src="docs/media/private.jpg" alt="Everything stays on your Mac: captures are saved on this Mac, text recognition runs on-device, and there is no account and no uploads."><br><b>Private:</b> captures and text recognition stay on your Mac.</td>
+  </tr>
+</table>
+
+Exports go to `~/Documents/Captures` by default. If you used an earlier version that saved to `~/Pictures/TobyShot`, TobyShot keeps using that folder until you choose another one. Closing the library keeps TobyShot running in the menu bar.
+
+To use Codex, assign **Open Latest Screenshot in Codex** under **Settings → Shortcuts → General**. It starts unassigned and can be changed or disabled there. The action opens the latest screenshot from history, skipping newer recordings, in a new Codex composer for you to add a prompt and send. You can also run it from TobyShot’s menu bar menu. This requires a Codex Desktop version that supports opening image files.
 
 ## Install
 
@@ -35,21 +74,7 @@ Microphone permission is only needed when you enable microphone audio for record
 
 If capture still fails, quit TobyShot, remove only its entry from **Screen & System Audio Recording**, add the current **Applications → TobyShot.app** with **+**, and reopen it.
 
-## Features
-
-- Capture an area across multiple monitors, a window, or a full screen, with an optional timer.
-- Annotate, crop, redact, copy, save, or pin screenshots.
-- Paste screenshots into the annotation canvas with ⌘V, then move and resize them to make insets or side-by-side comparisons.
-- Keep recent captures stacked in Quick Access, and drag any of them into another app.
-- Record your screen with optional system audio and microphone.
-- Recognize text, search local capture history by title or by the text inside screenshots, and customize shortcuts.
-- Open the latest screenshot in Codex with a configurable global shortcut.
-
-Exports go to `~/Documents/Captures` by default. If you used an earlier version that saved to `~/Pictures/TobyShot`, TobyShot keeps using that folder until you choose another one. Closing the library keeps TobyShot running in the menu bar.
-
-To use Codex, assign **Open Latest Screenshot in Codex** under **Settings → Shortcuts → General**. It starts unassigned and can be changed or disabled there. The action opens the latest screenshot from history, skipping newer recordings, in a new Codex composer for you to add a prompt and send. You can also run it from TobyShot’s menu bar menu. This requires a Codex Desktop version that supports opening image files.
-
-## Updates
+### Updates
 
 Choose **Check for Updates…** from the menu bar or **Settings → About → Updates**. Older versions without the updater can be replaced using the installation steps above. Your settings and capture history are kept.
 
