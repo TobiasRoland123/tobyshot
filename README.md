@@ -38,6 +38,7 @@ If capture still fails, quit TobyShot, remove only its entry from **Screen & Sys
 ## Features
 
 - Capture an area across multiple monitors, a window, or a full screen, with an optional timer.
+- In Capture Area, hover over bordered containers, scroll through enclosing areas, then click to capture. Drag for a custom rectangle.
 - Annotate, crop, redact, copy, save, or pin screenshots.
 - Paste screenshots into the annotation canvas with ⌘V, then move and resize them to make insets or side-by-side comparisons.
 - Keep recent captures stacked in Quick Access, and drag any of them into another app.
@@ -75,3 +76,13 @@ Keep `.local-signing` across rebuilds so the app keeps its identity. Never commi
 bash scripts/test.sh          # Run tests
 bash scripts/build.sh release # Build build/TobyShot.app
 ```
+
+### Area suggestions prototype
+
+Capture Area detects bordered or distinctly filled boxes on-device from the frozen screen images, after the selector is usable. A click allows 4 points of movement; dragging farther starts a manual rectangle at the press point. Scrolling selects an enclosing or enclosed area and centers the pointer. The original nesting path stays selected until the pointer leaves it. Trackpad motion accumulates over 24 points, with at least 150 ms between steps; momentum is ignored. Recording and dedicated window capture use their existing selectors.
+
+Open `Resources/FeatureMocks/area-suggestions.html` in a browser at 1100 × 850 to try the nested charts, controls, rounded borders, shadows, clipping, and occlusion cases. Its light and dark versions produced the four containers plus four smaller controls in browser-image checks. The negative examples retained the three visible containers and a button, and omitted the clipped and obscured parents. The detector uses a reduced contour proposal image with full-resolution boundary validation to keep suggestions responsive. The app logs readiness and candidate count under subsystem `TobyShot`, category `AreaSuggestions`.
+
+This is a feasibility prototype, not a semantic UI classifier. It accepts complete borders or sharp filled silhouettes, including smaller cards, chat bubbles, buttons, input boxes, and short prompt chips of at least 64 × 14 points. Continuous separators and background changes also identify pane sections using visible window bounds; sections can share edges with their enclosing pane. Rounded corners and faint borders are supported; unbounded text, tiny icons, extremely faint or thick boundaries, and pixel contours touching display edges may be missed. Fully visible window geometry can supply those edges for separated panes. The same frozen pixels are used to refine and crop every candidate. Pixel evidence and window ordering reject uncertain visibility, but cannot prove arbitrary in-page occlusion or identify every clipped element. Content grouped only by meaning, without a visible boundary or separator, is not independently inferred. Manual dragging remains available for these cases.
+
+Before treating the interaction as release-ready, try a mouse wheel and trackpad (including momentum and path endpoints), and physically arranged displays above, below, and left of the main screen at mixed scales. Check pointer recentering, Escape, Capture Previous Area, and the configured copy/save/annotate/pin actions with the fixture. Automated tests cover selection state, event routing, pixel crops, visibility, and coordinate conversion; they do not establish how recentering feels on hardware.

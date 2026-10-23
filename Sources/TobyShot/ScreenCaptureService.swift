@@ -88,7 +88,8 @@ final class ScreenCaptureService {
         let snapshots = try await snapshots(content: content)
         let windows = content.windows.filter { $0.windowLayer == 0 && $0.frame.width > 20 && $0.frame.height > 20 && $0.owningApplication?.processID != ProcessInfo.processInfo.processIdentifier }
         if mode == .window && windows.isEmpty { throw TobyError.message("No windows are available to capture. Open a window in another app and try again.") }
-        guard let selection = await selector.select(snapshots: snapshots, windows: mode == .window ? windows : [], instruction: mode == .window ? "Click a window to capture" : "Drag to capture an area") else { return nil }
+        guard let selection = await selector.select(snapshots: snapshots, windows: mode == .window ? windows : [], instruction: mode == .window ? "Click a window to capture" : "Drag to capture an area",
+                                                    suggestAreas: mode == .area) else { return nil }
         if let window = selection.window {
             let filter = SCContentFilter(desktopIndependentWindow: window)
             let scale = CGFloat(filter.pointPixelScale)
