@@ -132,6 +132,10 @@ public final class AnnotationEditorWindow: NSWindowController, NSWindowDelegate 
 
         guard let chars = event.charactersIgnoringModifiers?.lowercased() else { return false }
         let modifiers = ShortcutBinding(event: event).appKitModifiers
+        if modifiers == .command, chars == "v",
+           let canvas = window?.firstResponder as? AnnotationCanvasView, canvas.model === editorModel {
+            return editorModel.pasteImage()
+        }
         if (modifiers == .command || modifiers == [.command, .shift]), chars == "z" {
             modifiers.contains(.shift) ? editorModel.redo() : editorModel.undo()
             return true
@@ -221,7 +225,7 @@ enum AnnotationBackground: String, CaseIterable, Identifiable {
 }
 
 struct EditorAnnotation: Identifiable, Equatable {
-    enum Kind: Equatable { case arrow, rectangle, filledRectangle, ellipse, line, freehand, text, step, redaction, pixelation }
+    enum Kind: Equatable { case arrow, rectangle, filledRectangle, ellipse, line, freehand, text, step, redaction, pixelation, image }
     var id = UUID()
     var kind: Kind
     var start: CGPoint
@@ -241,6 +245,8 @@ struct EditorAnnotation: Identifiable, Equatable {
     var arrowSeed: UInt64 = .random(in: 1...UInt64.max)
     // Displacement from the endpoints' midpoint; translation preserves the curve.
     var arrowBend: CGPoint = .zero
+    // Immutable pixels are shared by duplicates and undo snapshots.
+    var image: CGImage?
 
     var arrowBendPoint: CGPoint {
         CGPoint(x: (start.x + end.x) / 2 + arrowBend.x,
@@ -478,10 +484,33 @@ final class AnnotationEditorModel: ObservableObject {
             copy.id = UUID()
             return copy
         }
-        annotations.append(contentsOf: copies)
+        insertObjects(copies)
         selectedIDs = Set(copies.map(\.id))
         resetSelectionDrag()
         return true
+    }
+
+    @discardableResult
+    func pasteImage(from pasteboard: NSPasteboard = .general) -> Bool {
+        guard let pixels = AnnotationClipboard.image(from: pasteboard) else { return false }
+        // Read before finishing edits, which can publish a new clipboard snapshot.
+        checkpoint()
+        tool = .select
+        let size = CGSize(width: pixels.width, height: pixels.height)
+        let origin = CGPoint(x: ((pixelSize.width - size.width) / 2).rounded(),
+                             y: ((pixelSize.height - size.height) / 2).rounded())
+        let annotation = EditorAnnotation(kind: .image, start: origin,
+            end: CGPoint(x: origin.x + size.width, y: origin.y + size.height), shadow: false, image: pixels)
+        insertObjects([annotation])
+        selectedID = annotation.id
+        return true
+    }
+
+    private func insertObjects(_ objects: [EditorAnnotation]) {
+        // Screenshots form an image layer underneath editable marks.
+        let imageIndex = annotations.firstIndex { $0.kind != .image } ?? annotations.endIndex
+        annotations.insert(contentsOf: objects.filter { $0.kind == .image }, at: imageIndex)
+        annotations.append(contentsOf: objects.filter { $0.kind != .image })
     }
 
     func adjustToolSize(by delta: CGFloat) {
@@ -504,11 +533,12 @@ final class AnnotationEditorModel: ObservableObject {
 
     private var appearanceSelection: [EditorAnnotation] {
         guard tool != .crop else { return [] }
-        return annotations.filter { selectedIDs.contains($0.id) }
+        return annotations.filter { selectedIDs.contains($0.id) && $0.kind != .image }
     }
 
     func renderedSelection() -> NSImage? {
-        AnnotationRenderer.render(annotations: annotations.filter { selectedIDs.contains($0.id) }, sourceImage: image)
+        AnnotationRenderer.render(annotations: annotations.filter { selectedIDs.contains($0.id) }, sourceImage: image,
+                                  imageAnnotations: annotations.filter { $0.kind == .image })
     }
 
     @discardableResult
@@ -554,7 +584,7 @@ final class AnnotationEditorModel: ObservableObject {
         guard tool != .crop else { return }
         let ids = selectedIDs
         let updated = annotations.map { annotation in
-            guard ids.contains(annotation.id), annotation.kind != .redaction else { return annotation }
+            guard ids.contains(annotation.id), annotation.kind != .redaction, annotation.kind != .image else { return annotation }
             var edited = annotation
             if let color, annotation.kind != .pixelation { edited.color = color }
             if let width {
@@ -806,7 +836,11 @@ final class AnnotationEditorModel: ObservableObject {
                          arrowStroke: AnnotationArrowStroke(rawValue: Preferences.string("annotationArrowStroke")) ?? .solid)
     }
     private func rect(from a: CGPoint, to b: CGPoint) -> CGRect { CGRect(x: min(a.x,b.x), y: min(a.y,b.y), width: abs(a.x-b.x), height: abs(a.y-b.y)) }
-    func annotationBounds(_ a: EditorAnnotation) -> CGRect { AnnotationGeometry(a, imageSize: pixelSize).renderedBounds }
+    func annotationBounds(_ a: EditorAnnotation) -> CGRect { AnnotationGeometry(a, imageBounds: imageBounds).renderedBounds }
+
+    var imageBounds: CGRect {
+        AnnotationRenderer.canvasBounds(imageSize: pixelSize, annotations: annotations.filter { $0.kind == .image })
+    }
 
     nonisolated static func bounds(for a: EditorAnnotation) -> CGRect {
         AnnotationGeometry(a).renderedBounds
@@ -815,7 +849,9 @@ final class AnnotationEditorModel: ObservableObject {
         // Select picks anything within an annotation's bounds. Drawing tools only edit visible
         // strokes and fills, leaving empty interiors and space beside curves free for drawing.
         if tool == .select { return annotationBounds(a).insetBy(dx: -tolerance, dy: -tolerance).contains(point) }
-        return AnnotationHitTest.contains(a, point: point, tolerance: tolerance, imageSize: pixelSize)
+        // An image's interior is canvas for drawing tools; Select moves the image.
+        if a.kind == .image { return false }
+        return AnnotationHitTest.contains(a, point: point, tolerance: tolerance, imageBounds: imageBounds)
     }
     private func translated(_ a: EditorAnnotation, by delta: CGPoint) -> EditorAnnotation {
         var b = a; b.start.x += delta.x; b.start.y += delta.y; b.end.x += delta.x; b.end.y += delta.y
@@ -985,7 +1021,7 @@ private struct AnnotationEditorRoot: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Annotation shortcuts").font(.title2.bold())
             Text("Move \(shortcuts.label(for: .moveTool))   Crop \(shortcuts.label(for: .cropTool))   Draw \(shortcuts.label(for: .drawTool))   Line \(shortcuts.label(for: .lineTool))\nText \(shortcuts.label(for: .textTool))   Arrow \(shortcuts.label(for: .arrowTool))   Counter \(shortcuts.label(for: .counterTool))   Ellipse \(shortcuts.label(for: .ellipseTool))\nRedact \(shortcuts.label(for: .redactionTool))   Rectangle \(shortcuts.label(for: .rectangleTool))   Filled rectangle \(shortcuts.label(for: .filledRectangleTool))   Pixelate \(shortcuts.label(for: .pixelateTool))\nBackground \(shortcuts.label(for: .backgroundTool))   Smaller/larger \(shortcuts.label(for: .decreaseToolSize))/\(shortcuts.label(for: .increaseToolSize))\nZoom in/out ⌘+/⌘−   Fit ⌘0   Actual size ⌘1\nCopy object \(shortcuts.label(for: .editorCopyObject))   Duplicate \(shortcuts.label(for: .editorDuplicate))   Save \(shortcuts.label(for: .editorSave))   Save as \(shortcuts.label(for: .editorSaveAs))\nCopy image \(shortcuts.label(for: .editorCopyScreenshot))   Print \(shortcuts.label(for: .editorPrint))   Pin \(shortcuts.label(for: .editorPin))\nUndo ⌘Z   Redo ⇧⌘Z   Delete Remove   Escape Select")
-            Text("Pinch to zoom. Use two-finger scrolling to move around the image.").foregroundStyle(.secondary)
+            Text("Pinch to zoom. Use two-finger scrolling to move around the image. Paste a screenshot with ⌘V while the canvas has focus. Use Select to move pasted images, or drag their corners to resize proportionally. Move an image beyond an edge to expand the canvas. Drawing tools add annotations over pasted images.").foregroundStyle(.secondary)
             Text("Drawing tools stay active, so you can add one annotation after another; Crop returns to the pointer once applied. New annotations stay selected. With a drawing tool, hover any annotation to show its handles, then drag a handle to edit it or drag its visible stroke or fill to move it. Dragging empty canvas, including inside an outlined shape, draws a new annotation. Hold Shift while drawing to snap lines and arrows to 45° increments, make rectangles square, or make ellipses circular. With the pointer, drag empty canvas space to select multiple annotations, then drag any selected annotation to move the group. Hold Shift to add to the selection. Drag an arrow endpoint to adjust it, or the middle handle to bend it; double-click the middle handle to straighten it. Drag the arrow itself to move it. Click with Text to type on the image; double-click existing text to edit it. Drag shape corners to resize rectangles, ellipses, freehand drawings, numbered steps, redactions, and pixelation regions; drag line endpoints to adjust them. Color and size controls update selected annotations. Drag a text corner to resize. Return finishes editing, Shift-Return adds a line. Crop applies when you finish the crop selection.").foregroundStyle(.secondary)
             HStack { Spacer(); Button("Close") { showHelp = false }.keyboardShortcut(.defaultAction) }
         }.padding(24).frame(width: 420)
@@ -1011,11 +1047,12 @@ enum AnnotationRenderer {
         render(annotations: [annotation], sourceImage: sourceImage)
     }
 
-    static func render(annotations: [EditorAnnotation], sourceImage: NSImage) -> NSImage? {
+    static func render(annotations: [EditorAnnotation], sourceImage: NSImage, imageAnnotations: [EditorAnnotation]? = nil) -> NSImage? {
         guard !annotations.isEmpty else { return nil }
         guard let source = sourceImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
-        let pixelSize = CGSize(width: source.width, height: source.height)
-        let geometries = annotations.map { AnnotationGeometry($0, imageSize: pixelSize) }
+        let pixels = pixelationSource(source, annotations: imageAnnotations ?? annotations,
+                                      needed: annotations.contains { $0.kind == .pixelation })
+        let geometries = annotations.map { AnnotationGeometry($0, imageBounds: pixels.bounds) }
         let bounds = geometries.reduce(CGRect.null) { $0.union($1.exportBounds) }
         guard !bounds.isNull, !bounds.isEmpty else { return nil }
         let width = max(1, Int(ceil(bounds.width)))
@@ -1025,9 +1062,9 @@ enum AnnotationRenderer {
         context.translateBy(x: 0, y: CGFloat(height))
         context.scaleBy(x: 1, y: -1)
         context.translateBy(x: -bounds.minX, y: -bounds.minY)
-        let sourcePixels = annotations.contains(where: { $0.kind == .pixelation }) ? pixelationSourcePixels(source) : []
         for (annotation, geometry) in zip(annotations, geometries) {
-            draw(annotation, geometry: geometry, in: context, pixelSize: pixelSize, sourcePixels: sourcePixels)
+            draw(annotation, geometry: geometry, in: context, pixelSize: pixels.bounds.size,
+                 sourcePixels: pixels.data, pixelOrigin: pixels.bounds.origin)
         }
         guard let rendered = context.makeImage() else { return nil }
         return NSImage(cgImage: rendered, size: NSSize(width: width, height: height))
@@ -1045,11 +1082,25 @@ enum AnnotationRenderer {
         } else { context.draw(cg, in: imageRect) }
         // Use a top-left image coordinate system for all annotation geometry.
         context.saveGState(); context.translateBy(x: -bounds.minX, y: bounds.maxY); context.scaleBy(x: 1, y: -1)
-        let sourcePixels = annotations.contains(where: { $0.kind == .pixelation }) ? pixelationSourcePixels(cg) : []
-        for annotation in annotations { draw(annotation, in: context, pixelSize: CGSize(width: cg.width, height: cg.height), sourcePixels: sourcePixels) }
+        let pixels = pixelationSource(cg, annotations: annotations, needed: annotations.contains { $0.kind == .pixelation })
+        for annotation in annotations {
+            draw(annotation, in: context, pixelSize: pixels.bounds.size,
+                 sourcePixels: pixels.data, pixelOrigin: pixels.bounds.origin)
+        }
         context.restoreGState()
         guard let result = context.makeImage() else { return image }
         return NSImage(cgImage: result, size: NSSize(width: width, height: height))
+    }
+
+    static func pixelationSource(_ source: CGImage, annotations: [EditorAnnotation], needed: Bool) -> (data: [UInt8], bounds: CGRect) {
+        let size = CGSize(width: source.width, height: source.height)
+        guard needed else { return ([], CGRect(origin: .zero, size: size)) }
+        let images = annotations.filter { $0.kind == .image }
+        guard !images.isEmpty else { return (pixelationSourcePixels(source), CGRect(origin: .zero, size: size)) }
+        let bounds = canvasBounds(imageSize: size, annotations: images)
+        let composed = render(image: NSImage(cgImage: source, size: size), annotations: images, canvasBounds: bounds)
+        guard let pixels = composed.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return ([], bounds) }
+        return (pixelationSourcePixels(pixels), bounds)
     }
 
     static func pixelationSourcePixels(_ source: CGImage) -> [UInt8] {
@@ -1064,8 +1115,8 @@ enum AnnotationRenderer {
         return pixels
     }
 
-    static func draw(_ a: EditorAnnotation, geometry suppliedGeometry: AnnotationGeometry? = nil, in c: CGContext, pixelSize: CGSize, sourcePixels: [UInt8], shadowScale: CGSize = CGSize(width: 1, height: 1)) {
-        let geometry = suppliedGeometry ?? AnnotationGeometry(a, imageSize: pixelSize)
+    static func draw(_ a: EditorAnnotation, geometry suppliedGeometry: AnnotationGeometry? = nil, in c: CGContext, pixelSize: CGSize, sourcePixels: [UInt8], shadowScale: CGSize = CGSize(width: 1, height: 1), pixelOrigin: CGPoint = .zero) {
+        let geometry = suppliedGeometry ?? AnnotationGeometry(a, imageBounds: CGRect(origin: pixelOrigin, size: pixelSize))
         let col = a.color.cgColor
         c.saveGState(); c.setStrokeColor(col); c.setFillColor(col); c.setLineWidth(geometry.lineWidth); c.setLineCap(.round); c.setLineJoin(.round)
         if let shadow = geometry.shadow {
@@ -1073,8 +1124,14 @@ enum AnnotationRenderer {
             c.setShadow(offset: CGSize(width: shadow.offset.width * shadowScale.width, height: shadow.offset.height * shadowScale.height),
                         blur: shadow.blur * abs(shadowScale.width), color: shadow.color)
         }
-        if a.kind == .pixelation {
-            pixelate(a, rect: geometry.pixelationRect, in: c, imageSize: pixelSize, sourcePixels: sourcePixels)
+        if a.kind == .image, let image = a.image {
+            let rect = geometry.path.boundingBoxOfPath
+            c.translateBy(x: rect.minX, y: rect.maxY)
+            c.scaleBy(x: 1, y: -1)
+            c.interpolationQuality = .high
+            c.draw(image, in: CGRect(origin: .zero, size: rect.size))
+        } else if a.kind == .pixelation {
+            pixelate(a, rect: geometry.pixelationRect, in: c, imageSize: pixelSize, sourcePixels: sourcePixels, pixelOrigin: pixelOrigin)
         } else {
             if a.kind == .redaction { c.setFillColor(NSColor.black.cgColor) }
             c.addPath(geometry.path)
@@ -1088,14 +1145,15 @@ enum AnnotationRenderer {
         c.restoreGState()
     }
 
-    private static func pixelate(_ a: EditorAnnotation, rect r: CGRect, in c: CGContext, imageSize: CGSize, sourcePixels: [UInt8]) {
-        guard r.width > 0, r.height > 0 else { return }
+    private static func pixelate(_ a: EditorAnnotation, rect r: CGRect, in c: CGContext, imageSize: CGSize, sourcePixels: [UInt8], pixelOrigin: CGPoint) {
+        guard r.width > 0, r.height > 0, sourcePixels.count == Int(imageSize.width) * Int(imageSize.height) * 4 else { return }
         // Bitmap data and annotation coordinates both start at the top-left row.
         let step = max(8, Int(a.width * 5))
         for y in stride(from: Int(r.minY), to: Int(r.maxY), by: step) { for x in stride(from: Int(r.minX), to: Int(r.maxX), by: step) {
             let x1 = min(Int(r.maxX), x + step), y1 = min(Int(r.maxY), y + step); var sum = [Int](repeating: 0, count: 4); var count = 0
-            for sy in stride(from: y, to: y1, by: max(1, step / 4)) { for sx in stride(from: x, to: x1, by: max(1, step / 4)) { let i = (sy * Int(imageSize.width) + sx) * 4; for ch in 0..<3 { sum[ch] += Int(sourcePixels[i+ch]) }; count += 1 } }
-            let color = CGColor(srgbRed: CGFloat(sum[0] / max(count,1))/255, green: CGFloat(sum[1] / max(count,1))/255, blue: CGFloat(sum[2] / max(count,1))/255, alpha: 1)
+            for sy in stride(from: y, to: y1, by: max(1, step / 4)) { for sx in stride(from: x, to: x1, by: max(1, step / 4)) { let i = ((sy - Int(pixelOrigin.y)) * Int(imageSize.width) + sx - Int(pixelOrigin.x)) * 4; for ch in 0..<4 { sum[ch] += Int(sourcePixels[i+ch]) }; count += 1 } }
+            let alpha = CGFloat(sum[3] / max(count, 1)) / 255
+            let color = CGColor(srgbRed: CGFloat(sum[0] / max(count,1))/255 / max(alpha, 0.001), green: CGFloat(sum[1] / max(count,1))/255 / max(alpha, 0.001), blue: CGFloat(sum[2] / max(count,1))/255 / max(alpha, 0.001), alpha: alpha)
             c.setFillColor(color); c.fill(CGRect(x:x,y:y,width:x1-x,height:y1-y))
         } }
     }

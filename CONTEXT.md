@@ -5,7 +5,10 @@ The annotation editor is the workspace for marking up a screenshot. Its language
 ## Language
 
 **Annotation**:
-An individual editable mark on a screenshot, such as an arrow, shape, text label, numbered step, redaction, or pixelated region.
+An individual editable object in the composition, such as an arrow, shape, text label, numbered step, redaction, pixelated region, or pasted image.
+
+**Pasted image**:
+A clipboard image placed above the original screenshot and below annotation marks. Select moves it; corner handles resize it while preserving its aspect ratio. Its bounds can expand the canvas in any direction. Drawing tools treat its interior as a surface for new annotations, including pixelation. Pasted images remain independent objects until export.
 
 **Active tool**:
 The tool currently chosen in the annotation toolbar. An active drawing tool and a selected annotation are separate concepts.
@@ -34,7 +37,7 @@ The visible border of an outlined shape, such as an unfilled rectangle or ellips
 The unfilled area enclosed by an annotation outline, excluding any other annotations within it. It is distinct from the outline and editing handles.
 
 **Editing target**:
-Where a gesture starts on an existing annotation: an editing handle, or a visible stroke, outline, or filled area within a small tolerance. With any drawing tool active, a gesture that starts on an editing target edits that annotation; one that starts on empty canvas or an empty interior creates a new annotation. Handles take priority, and the choice holds for the whole gesture.
+Where a gesture starts on an existing annotation: an editing handle, or a visible stroke, outline, or filled area within a small tolerance. With any drawing tool active, a gesture that starts on an editing target edits that annotation; one that starts on empty canvas, an empty interior, or a pasted image creates a new annotation. Handles take priority, and the choice holds for the whole gesture.
 
 ## Example dialogue
 

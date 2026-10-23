@@ -8,6 +8,8 @@ final class AnnotationPreviewRenderer {
     private var backgroundImage: CGImage?
     private var backgroundSize: CGSize = .zero
     private var sourcePixels: [UInt8] = []
+    private var pixelBounds: CGRect = .zero
+    private var imageAnnotations: [EditorAnnotation] = []
     private var pixelations: [UUID: Pixelation] = [:]
 
     private struct Pixelation {
@@ -54,12 +56,23 @@ final class AnnotationPreviewRenderer {
         context.restoreGState()
 
         let pixelationIDs = Set(annotations.filter { $0.kind == .pixelation }.map(\.id))
+        let images = annotations.filter { $0.kind == .image }
+        if images != imageAnnotations {
+            imageAnnotations = images
+            sourcePixels = []
+            pixelations.removeAll()
+        }
         pixelations = pixelations.filter { pixelationIDs.contains($0.key) }
         if pixelationIDs.isEmpty { sourcePixels = [] }
+        else if sourcePixels.isEmpty {
+            let pixels = AnnotationRenderer.pixelationSource(source, annotations: images, needed: true)
+            sourcePixels = pixels.data
+            pixelBounds = pixels.bounds
+        }
         for annotation in annotations {
-            let geometry = AnnotationGeometry(annotation, imageSize: pixelSize)
+            let geometry = AnnotationGeometry(annotation, imageBounds: pixelBounds)
             if annotation.kind == .pixelation {
-                if let patch = cachedPixelation(annotation, geometry: geometry, source: source) {
+                if let patch = cachedPixelation(annotation, geometry: geometry) {
                     context.saveGState()
                     context.interpolationQuality = .none
                     drawImage(patch.image, in: patch.rect, context: context)
@@ -93,18 +106,17 @@ final class AnnotationPreviewRenderer {
         return backgroundImage ?? source
     }
 
-    private func cachedPixelation(_ annotation: EditorAnnotation, geometry: AnnotationGeometry, source: CGImage) -> Pixelation? {
+    private func cachedPixelation(_ annotation: EditorAnnotation, geometry: AnnotationGeometry) -> Pixelation? {
         let rect = geometry.pixelationRect
         guard !rect.isNull, !rect.isEmpty else { pixelations[annotation.id] = nil; return nil }
         if let patch = pixelations[annotation.id], patch.rect == rect, patch.width == annotation.width { return patch }
-        if sourcePixels.isEmpty { sourcePixels = AnnotationRenderer.pixelationSourcePixels(source) }
         guard let bitmap = CGContext(data: nil, width: Int(rect.width), height: Int(rect.height), bitsPerComponent: 8,
                                      bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         bitmap.translateBy(x: -rect.minX, y: rect.maxY)
         bitmap.scaleBy(x: 1, y: -1)
         AnnotationRenderer.draw(annotation, geometry: geometry, in: bitmap,
-                                pixelSize: CGSize(width: source.width, height: source.height), sourcePixels: sourcePixels)
+                                pixelSize: pixelBounds.size, sourcePixels: sourcePixels, pixelOrigin: pixelBounds.origin)
         guard let image = bitmap.makeImage() else { return nil }
         let patch = Pixelation(rect: rect, width: annotation.width, image: image)
         pixelations[annotation.id] = patch

@@ -55,8 +55,9 @@ struct AnnotationGeometry {
     let textOrigin: CGPoint
     let shadow: Shadow?
     let pixelationRect: CGRect
+    private let isImage: Bool
 
-    init(_ annotation: EditorAnnotation, imageSize: CGSize? = nil) {
+    init(_ annotation: EditorAnnotation, imageSize: CGSize? = nil, imageBounds: CGRect? = nil) {
         let a = annotation
         let rect = CGRect(x: min(a.start.x, a.end.x), y: min(a.start.y, a.end.y),
                           width: abs(a.end.x - a.start.x), height: abs(a.end.y - a.start.y))
@@ -66,6 +67,8 @@ struct AnnotationGeometry {
         var stroked = false
         var pixelationRect = CGRect.null
         switch a.kind {
+        case .image:
+            if a.image != nil { path.addRect(rect) }
         case .redaction:
             path.addRect(rect)
         case .rectangle, .filledRectangle, .ellipse, .line:
@@ -96,7 +99,9 @@ struct AnnotationGeometry {
             text = Text(line: line, baseline: CGPoint(x: a.start.x - width / 2, y: a.start.y + radius / 3))
         case .pixelation:
             pixelationRect = rect.integral
-            if let imageSize { pixelationRect = pixelationRect.intersection(CGRect(origin: .zero, size: imageSize)) }
+            if let bounds = imageBounds ?? imageSize.map({ CGRect(origin: .zero, size: $0) }) {
+                pixelationRect = pixelationRect.intersection(bounds)
+            }
             if !pixelationRect.isEmpty { path.addRect(pixelationRect) }
         }
         self.path = path
@@ -105,8 +110,9 @@ struct AnnotationGeometry {
         self.text = text
         self.textLayout = textLayout
         self.textOrigin = a.start
-        self.shadow = a.shadow && a.kind != .redaction && a.kind != .pixelation ? Shadow() : nil
+        self.shadow = a.shadow && a.kind != .redaction && a.kind != .pixelation && a.kind != .image ? Shadow() : nil
         self.pixelationRect = pixelationRect
+        self.isImage = a.kind == .image
     }
 
     var renderedBounds: CGRect {
@@ -124,6 +130,6 @@ struct AnnotationGeometry {
 
     var exportBounds: CGRect {
         // Keep fractional antialiased edge pixels and align the export with the canvas.
-        renderedBounds.insetBy(dx: -1, dy: -1).integral
+        isImage ? renderedBounds.integral : renderedBounds.insetBy(dx: -1, dy: -1).integral
     }
 }

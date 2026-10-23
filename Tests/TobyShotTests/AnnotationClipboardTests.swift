@@ -5,6 +5,93 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct AnnotationClipboardTests {
+    @Test(arguments: ["PNG", "TIFF", "JPEG"])
+    func readsImageDataAtItsPixelDimensionsWithoutChangingPasteboard(format: String) throws {
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let pixels = try testImageData(format: format, pixelSize: CGSize(width: 240, height: 160), pointSize: CGSize(width: 120, height: 80))
+        board.clearContents()
+        let type: NSPasteboard.PasteboardType = ["PNG": .png, "TIFF": .tiff, "JPEG": .init("public.jpeg")][format]!
+        board.setData(pixels, forType: type)
+        let changeCount = board.changeCount
+        let types = board.types
+
+        let image = try #require(AnnotationClipboard.image(from: board))
+
+        #expect(image.width == 240)
+        #expect(image.height == 160)
+        #expect(board.changeCount == changeCount)
+        #expect(board.types == types)
+    }
+
+    @Test
+    func readsTobyShotFileOnlyCopyAndMaterializesItsLazySnapshot() throws {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: "clipboardMode")
+        defer { defaults.set(previous, forKey: "clipboardMode") }
+        defaults.set("File", forKey: "clipboardMode")
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let clipboard = AnnotationClipboard(pasteboard: board, directory: directory)
+        var renders = 0
+        let snapshot = try testCGImage(width: 360, height: 240)
+        clipboard.copy {
+            renders += 1
+            return NSImage(cgImage: snapshot, size: NSSize(width: 180, height: 120))
+        }
+
+        #expect(renders == 0)
+        #expect(board.types?.contains(.fileURL) == true)
+        #expect(board.types?.contains(.png) == false)
+        #expect(!FileManager.default.fileExists(atPath: clipboard.fileURL.path))
+        let image = try #require(AnnotationClipboard.image(from: board))
+
+        #expect(renders == 1)
+        #expect(image.width == 360)
+        #expect(image.height == 240)
+        #expect(FileManager.default.fileExists(atPath: clipboard.fileURL.path))
+    }
+
+    @Test
+    func readsStandaloneLocalImageFileURL() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("retina.tiff")
+        try testImageData(format: "TIFF", pixelSize: CGSize(width: 300, height: 200), pointSize: CGSize(width: 100, height: 66)).write(to: file)
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        board.clearContents()
+        board.setString(file.absoluteString, forType: .fileURL)
+
+        let image = try #require(AnnotationClipboard.image(from: board))
+
+        #expect(image.width == 300)
+        #expect(image.height == 200)
+    }
+
+    @Test
+    func rejectsTextAndCorruptImageContent() throws {
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        board.clearContents()
+        board.setString("plain text", forType: .string)
+        #expect(AnnotationClipboard.image(from: board) == nil)
+
+        board.clearContents()
+        board.setData(Data("not an image".utf8), forType: .png)
+        #expect(AnnotationClipboard.image(from: board) == nil)
+
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let textFile = directory.appendingPathComponent("notes.txt")
+        try Data("not an image".utf8).write(to: textFile)
+        board.clearContents()
+        board.setString(textFile.absoluteString, forType: .fileURL)
+        #expect(AnnotationClipboard.image(from: board) == nil)
+    }
+
     @Test(arguments: ["Image", "File", "File & Image"])
     func copiesLatestPixelsInTheConfiguredFormatAndSurvivesEditorRelease(mode: String) throws {
         let defaults = UserDefaults.standard
@@ -382,6 +469,26 @@ struct AnnotationClipboardTests {
         await withCheckedContinuation { continuation in
             DispatchQueue.main.async { continuation.resume() }
         }
+    }
+
+    private func testImageData(format: String, pixelSize: CGSize, pointSize: CGSize) throws -> Data {
+        let pixels = try testCGImage(width: Int(pixelSize.width), height: Int(pixelSize.height))
+        let image = NSImage(cgImage: pixels, size: pointSize)
+        return try ImageOutput.data(image, format: format)
+    }
+
+    private func testCGImage(width: Int, height: Int) throws -> CGImage {
+        let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(NSColor.systemBlue.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return try #require(context.makeImage())
+    }
+
+    private func temporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
     }
 
     private func makeModel(size: CGSize = CGSize(width: 120, height: 90), color: NSColor = .white) -> AnnotationEditorModel {
