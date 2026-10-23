@@ -4,7 +4,7 @@ import Testing
 
 struct AreaSuggestionDetectorTests {
     @Test(arguments: [1, 2])
-    func detectsNestedBordersAndOmitsControlsAtNativeScale(scale: Int) throws {
+    func detectsNestedBordersAndControlsAtNativeScale(scale: Int) throws {
         let rectangles = [CGRect(x: 40, y: 40, width: 800, height: 500),
                           CGRect(x: 70, y: 100, width: 730, height: 390),
                           CGRect(x: 100, y: 200, width: 180, height: 220),
@@ -20,7 +20,9 @@ struct AreaSuggestionDetectorTests {
             }
         }
         let result = try detect(display)
-        let expected = rectangles.map { global($0, display: display) }
+        let expected = (rectangles + [CGRect(x: 100, y: 130, width: 100, height: 30),
+                                      CGRect(x: 220, y: 130, width: 180, height: 30)])
+            .map { global($0, display: display) }
         #expect(Set(result) == Set(expected))
         for rect in result {
             let captured = try AreaCaptureComposition.capture(rect: rect, displays: [display])
@@ -36,6 +38,69 @@ struct AreaSuggestionDetectorTests {
             context.setShadow(offset: CGSize(width: 0, height: 6), blur: 16, color: CGColor(gray: 0, alpha: 0.25))
             box(rect, radius: 16, context: context)
             context.restoreGState()
+        }
+        #expect(try detect(display) == [global(rect, display: display)])
+    }
+
+    @Test(arguments: [1, 2])
+    func detectsSmallFilledRoundedChatAndComposerSurfacesAtNativeScale(scale: Int) throws {
+        let chatBubble = CGRect(x: 72, y: 88, width: 220, height: 42)
+        let composer = CGRect(x: 310, y: 360, width: 500, height: 98)
+        let display = try fixture(scale: scale) { context in
+            // Filled surfaces have no explicit border; the boundary is the
+            // rounded silhouette against the fixture background.
+            box(chatBubble, radius: 21, border: 0.82, fill: 0.82, context: context)
+            box(composer, radius: 22, border: 0.88, fill: 0.88, context: context)
+        }
+        let expected = [chatBubble, composer].map { global($0, display: display) }
+        #expect(Set(try detect(display)) == Set(expected))
+    }
+
+    @Test(arguments: [1, 2])
+    func filledRoundedSurfaceDoesNotIncludeShadow(scale: Int) throws {
+        let rect = CGRect(x: 80, y: 70, width: 380, height: 98)
+        let display = try fixture(scale: scale) { context in
+            context.setShadow(offset: CGSize(width: 0, height: 6), blur: 16, color: CGColor(gray: 0, alpha: 0.25))
+            context.setFillColor(CGColor(gray: 0.4, alpha: 1))
+            context.addPath(CGPath(roundedRect: rect, cornerWidth: 22, cornerHeight: 22, transform: nil))
+            context.fillPath()
+        }
+        let result = try detect(display)
+        #expect(result == [global(rect, display: display)])
+    }
+
+    @Test(arguments: [1, 2])
+    func dividerMeetingOuterBorderKeepsWholeCard(scale: Int) throws {
+        let rect = CGRect(x: 80, y: 70, width: 380, height: 140)
+        let display = try fixture(scale: scale) { context in
+            box(rect, radius: 12, context: context)
+            context.setFillColor(CGColor(gray: 0.25, alpha: 1))
+            context.fill(CGRect(x: rect.minX, y: rect.midY, width: rect.width, height: 2))
+        }
+        let result = try detect(display)
+        #expect(result == [global(rect, display: display)])
+    }
+
+    @Test(arguments: [1, 2])
+    func detectsSmallBorderedControlAtNativeScale(scale: Int) throws {
+        let rect = CGRect(x: 137, y: 121, width: 100, height: 32)
+        let display = try fixture(scale: scale) { context in
+            box(rect, radius: 7, border: 0.25, fill: 1, context: context)
+        }
+        let result = try detect(display)
+        #expect(result == [global(rect, display: display)])
+    }
+
+    @Test(arguments: [1, 2], [false, true])
+    func detectsSmallSubtleBordersOnDarkAndLightSurfacesAtNativeScale(scale: Int, dark: Bool) throws {
+        let rect = CGRect(x: 223, y: 177, width: 100, height: 50)
+        let background = dark ? CGFloat(0.10) : CGFloat(0.95)
+        let border = dark ? CGFloat(0.14) : CGFloat(0.91)
+        let display = try fixture(scale: scale) { context in
+            context.setFillColor(CGColor(gray: background, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: 900, height: 600))
+            // The interior matches its background, leaving only a subtle edge.
+            box(rect, radius: 8, border: border, fill: background, context: context)
         }
         #expect(try detect(display) == [global(rect, display: display)])
     }
@@ -79,8 +144,8 @@ struct AreaSuggestionDetectorTests {
 
     @Test(arguments: [1, 2])
     func pooledProposalsKeepThinBordersAndNearbyNestedContainers(scale: Int) throws {
-        // Offset the edges from the pooling grid and exercise the smallest
-        // eligible containers on an image whose dimensions do not divide evenly.
+        // Offset the edges from the pooling grid and exercise nearby nested
+        // containers on an image whose dimensions do not divide evenly.
         let parent = CGRect(x: 81, y: 73, width: 420, height: 300)
         let child = CGRect(x: 97, y: 91, width: 126, height: 86)
         let sibling = CGRect(x: 239, y: 91, width: 126, height: 86)

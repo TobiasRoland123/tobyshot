@@ -1,8 +1,8 @@
 import AppKit
 import Vision
 
-/// A conservative, on-device prototype. Vision proposes contours; full-resolution
-/// pixels must confirm four sharp sides before a rectangle becomes selectable.
+/// An on-device prototype. Vision proposes contours; full-resolution pixels
+/// confirm the outer bounds of bordered or filled surfaces.
 enum AreaSuggestionDetector {
     // Contour extraction dominates readiness. Pool thin edges into this smaller
     // proposal image; refine every accepted boundary against the original pixels.
@@ -42,12 +42,13 @@ enum AreaSuggestionDetector {
                                   y: (1 - normalized.maxY) * CGFloat(pixels.height),
                                   width: normalized.width * CGFloat(pixels.width),
                                   height: normalized.height * CGFloat(pixels.height))
-            // Common controls are too small or too slender. This intentionally
-            // also misses small cards: uncertain proposals should stay manual.
-            guard proposed.width / display.scale >= 120, proposed.height / display.scale >= 80,
-                  proposed.width / proposed.height < 8, proposed.height / proposed.width < 5,
+            // Include short cards, bubbles, and controls while omitting icons
+            // and text fragments. Check the final size after pixel refinement.
+            guard proposed.width / display.scale >= 60, proposed.height / display.scale >= 20,
+                  proposed.width / proposed.height < 20, proposed.height / proposed.width < 5,
                   rectangular(contour, bounds: normalized),
                   let rect = pixels.refine(proposed),
+                  rect.width / display.scale >= 64, rect.height / display.scale >= 24,
                   isVisible(rect, imageSize: CGSize(width: pixels.width, height: pixels.height),
                             displayFrame: displayFrame, windows: windows) else { continue }
             if !rectangles.contains(rect) { rectangles.append(rect) }
@@ -95,7 +96,7 @@ enum AreaSuggestionDetector {
             let a = points[index], b = points[(index + 1) % points.count]
             twiceArea += CGFloat(a.x * b.y - b.x * a.y)
         }
-        return abs(twiceArea) / 2 / (bounds.width * bounds.height) >= 0.94
+        return abs(twiceArea) / 2 / (bounds.width * bounds.height) >= 0.90
     }
 
     private struct Pixels {
@@ -118,31 +119,35 @@ enum AreaSuggestionDetector {
         }
 
         func refine(_ rect: CGRect) -> CGRect? {
+            let shortestSide = min(rect.width, rect.height)
             let radius = max(4, Int(ceil(CGFloat(max(width, height)) / CGFloat(AreaSuggestionDetector.contourDimension))) * 2)
-            guard let left = edge(near: rect.minX, from: rect.minY, to: rect.maxY, vertical: true, lower: true, radius: radius),
-                  let right = edge(near: rect.maxX, from: rect.minY, to: rect.maxY, vertical: true, lower: false, radius: radius),
-                  let top = edge(near: rect.minY, from: rect.minX, to: rect.maxX, vertical: false, lower: true, radius: radius),
-                  let bottom = edge(near: rect.maxY, from: rect.minX, to: rect.maxX, vertical: false, lower: false, radius: radius),
+            guard let left = edge(near: rect.minX, from: rect.minY, to: rect.maxY, vertical: true, lower: true, radius: radius, shortestSide: shortestSide),
+                  let right = edge(near: rect.maxX, from: rect.minY, to: rect.maxY, vertical: true, lower: false, radius: radius, shortestSide: shortestSide),
+                  let top = edge(near: rect.minY, from: rect.minX, to: rect.maxX, vertical: false, lower: true, radius: radius, shortestSide: shortestSide),
+                  let bottom = edge(near: rect.maxY, from: rect.minX, to: rect.maxX, vertical: false, lower: false, radius: radius, shortestSide: shortestSide),
                   right > left, bottom > top else { return nil }
-            // A clipped flat surface can form a perfect rectangle at a viewport
-            // edge. Require an actual border band on all four sides, distinct from
-            // both the outside and the interior, rather than accepting that cut.
-            guard hasBorder(at: left, from: top, to: bottom, vertical: true, lower: true, depth: radius),
-                  hasBorder(at: right, from: top, to: bottom, vertical: true, lower: false, depth: radius),
-                  hasBorder(at: top, from: left, to: right, vertical: false, lower: true, depth: radius),
-                  hasBorder(at: bottom, from: left, to: right, vertical: false, lower: false, depth: radius) else { return nil }
+            // Accept either a complete border or a filled silhouette. A border
+            // present on only some sides can indicate a cut at a viewport edge.
+            let refinedSide = min(right - left, bottom - top)
+            let borders = [hasBorder(at: left, from: top, to: bottom, vertical: true, lower: true, depth: radius, shortestSide: refinedSide),
+                           hasBorder(at: right, from: top, to: bottom, vertical: true, lower: false, depth: radius, shortestSide: refinedSide),
+                           hasBorder(at: top, from: left, to: right, vertical: false, lower: true, depth: radius, shortestSide: refinedSide),
+                           hasBorder(at: bottom, from: left, to: right, vertical: false, lower: false, depth: radius, shortestSide: refinedSide)]
+            guard borders.allSatisfy({ $0 }) || borders.allSatisfy({ !$0 }) else { return nil }
             return CGRect(x: left, y: top, width: right - left, height: bottom - top)
         }
 
-        private func hasBorder(at edge: Int, from start: Int, to end: Int, vertical: Bool, lower: Bool, depth: Int) -> Bool {
+        private func hasBorder(at edge: Int, from start: Int, to end: Int, vertical: Bool, lower: Bool, depth: Int, shortestSide: Int) -> Bool {
             let direction = lower ? 1 : -1
             let boundary = lower ? edge : edge - 1
             let outside = boundary - direction * 2
             let inside = boundary + direction * (depth + 2)
             let limit = vertical ? width : height
             guard min(outside, inside) >= 0, max(outside, inside) < limit else { return false }
+            let inset = min(CGFloat(end - start) * 0.45, CGFloat(shortestSide) / 2)
+            var matches = 0
             for sample in 0..<9 {
-                let along = start + Int(CGFloat(end - start) * (0.2 + CGFloat(sample) / 8 * 0.6))
+                let along = start + Int(inset + (CGFloat(end - start) - inset * 2) * CGFloat(sample) / 8)
                 func index(_ across: Int) -> Int { (vertical ? along * width + across : across * width + along) * 4 }
                 let a = index(outside), b = index(inside)
                 var bordered = false
@@ -155,15 +160,18 @@ enum AreaSuggestionDetector {
                         if value < lo - 8 || value > hi + 8 { bordered = true }
                     }
                 }
-                if !bordered { return false }
+                if bordered { matches += 1 }
             }
-            return true
+            // A divider meeting the outer border can interrupt a few samples.
+            return matches >= 7
         }
 
         func edgeImage() -> CGImage? {
             guard width > 1, height > 1 else { return nil }
             // Pool edges instead of resizing a thin binary line with interpolation,
             // which can erase the one-pixel borders we need on Retina displays.
+            // A lower proposal threshold connects faint antialiased corners;
+            // native-resolution verification still requires stronger straight edges.
             let factor = max(1, Int(ceil(CGFloat(max(width, height)) / CGFloat(AreaSuggestionDetector.contourDimension))))
             let edgeWidth = (width + factor - 1) / factor
             let edgeHeight = (height + factor - 1) / factor
@@ -174,8 +182,8 @@ enum AreaSuggestionDetector {
                     let index = (y * width + x) * 4
                     for channel in 0..<3 {
                         let value = Int(bytes[index + channel])
-                        if abs(value - Int(bytes[index - 4 + channel])) >= 12 ||
-                           abs(value - Int(bytes[index - width * 4 + channel])) >= 12 {
+                        if abs(value - Int(bytes[index - 4 + channel])) >= 6 ||
+                           abs(value - Int(bytes[index - width * 4 + channel])) >= 6 {
                             edges[(y / factor) * edgeWidth + x / factor] = 255
                             break
                         }
@@ -189,22 +197,25 @@ enum AreaSuggestionDetector {
         }
 
         private func edge(near position: CGFloat, from start: CGFloat, to end: CGFloat,
-                          vertical: Bool, lower: Bool, radius: Int) -> Int? {
+                          vertical: Bool, lower: Bool, radius: Int, shortestSide: CGFloat) -> Int? {
+            // Short pill-shaped surfaces have straight edges only near the
+            // center; long sides retain a wider sampling span.
+            let inset = min((end - start) * 0.45, shortestSide / 2)
             let positions = (Int(position.rounded()) - radius)...(Int(position.rounded()) + radius)
             // Choose the outer sharp edge of a border, not its inner edge or the
-            // gradual shadow beyond it. Require continuity along every sampled side.
+            // gradual shadow beyond it. Allow small antialiasing interruptions.
             for edge in lower ? Array(positions) : Array(positions.reversed()) {
                 var matches = 0
                 for sample in 0..<33 {
-                    let along = Int(start + (end - start) * (0.16 + CGFloat(sample) / 32 * 0.68))
+                    let along = Int(start + inset + (end - start - inset * 2) * CGFloat(sample) / 32)
                     let x = vertical ? edge : along, y = vertical ? along : edge
                     let px = vertical ? x - 1 : x, py = vertical ? y : y - 1
                     guard x > 0, y > 0, x < width, y < height, px >= 0, py >= 0 else { continue }
                     let a = (y * width + x) * 4, b = (py * width + px) * 4
                     let contrast = (0..<3).map { abs(Int(bytes[a + $0]) - Int(bytes[b + $0])) }.max() ?? 0
-                    if contrast >= 12 { matches += 1 }
+                    if contrast >= 8 { matches += 1 }
                 }
-                if matches == 33 { return edge }
+                if matches >= 30 { return edge }
             }
             return nil
         }

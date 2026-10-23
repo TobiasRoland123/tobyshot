@@ -138,13 +138,13 @@
         <p class="eyebrow">TobyShot · Issue #51 · Local fixture</p>
         <h1>Area suggestion dashboard</h1>
       </div>
-      <button type="button" id="theme-toggle" aria-pressed="false" data-eligible="false" data-reason="Control">Dark appearance</button>
+      <button type="button" id="theme-toggle" aria-pressed="false" data-eligible="true" data-reason="Bounded control above minimum size">Dark appearance</button>
     </header>
 
     <aside class="fixture-legend" id="fixture-legend" aria-label="Fixture expectations" data-eligible="false" data-reason="Unbounded explanatory text">
       <p><strong>Start at the center of the left chart.</strong> Expected path: <code>chart-left → main-card → surrounding-panel</code>. Scrolling back inward must return to the left chart.</p>
       <p>The card center lies over <code>chart-right</code>; hovering that sibling after stepping outward must preserve the original path. Both charts are independently eligible.</p>
-      <p><strong>Exclude:</strong> headings, paragraphs, buttons, checkbox, input, and individual chart marks. <strong>Below:</strong> uncertain shadows, clipped parents, and occlusion. Attributes declare fixture expectations.</p>
+      <p><strong>Include:</strong> bordered buttons and inputs. <strong>Exclude:</strong> unbounded headings, paragraphs, the small checkbox, and individual chart marks. <strong>Below:</strong> uncertain shadows, clipped parents, and occlusion. Attributes declare fixture expectations.</p>
     </aside>
 
     <section class="panel" id="surrounding-panel" data-eligible="true" data-reason="Complete clearly bordered surrounding panel">
@@ -155,13 +155,13 @@
       <article class="main-card" id="main-card" data-eligible="true" data-parent="surrounding-panel" data-center-over="chart-right" data-reason="Complete clearly bordered card">
         <div class="card-heading" data-eligible="false" data-reason="Unbounded heading and control group">
           <h2 id="card-title" data-eligible="false" data-reason="Text without surrounding boundary">Revenue overview</h2>
-          <button type="button" id="period-toggle" data-eligible="false" data-reason="Control">Last 30 days</button>
+          <button type="button" id="period-toggle" data-eligible="true" data-reason="Bounded control above minimum size">Last 30 days</button>
         </div>
         <p class="card-description" id="unbounded-paragraph" data-eligible="false" data-reason="Paragraph without surrounding boundary">New subscriptions are growing steadily, with the strongest conversion coming from direct traffic.</p>
         <div class="controls" data-eligible="false" data-reason="Unbounded control group">
-          <label for="comparison"><input type="checkbox" id="comparison" checked data-eligible="false" data-reason="Control"> Compare previous period</label>
-          <input type="text" id="channel-filter" aria-label="Filter channels" placeholder="Filter channels" data-eligible="false" data-reason="Control">
-          <button type="button" id="refresh" class="primary-button" data-eligible="false" data-reason="Control">Refresh</button>
+          <label for="comparison"><input type="checkbox" id="comparison" checked data-eligible="false" data-reason="Below minimum size"> Compare previous period</label>
+          <input type="text" id="channel-filter" aria-label="Filter channels" placeholder="Filter channels" data-eligible="true" data-reason="Bounded control above minimum size">
+          <button type="button" id="refresh" class="primary-button" data-eligible="true" data-reason="Bounded control above minimum size">Refresh</button>
         </div>
         <div class="chart-grid" data-eligible="false" data-reason="Layout group without a boundary">
           <section class="chart" id="chart-left" aria-labelledby="left-title" data-eligible="true" data-parent="main-card" data-initial-hover="center" data-expected-path="chart-left main-card surrounding-panel" data-reason="Smallest eligible rectangle at initial pointer">
@@ -239,7 +239,7 @@
           <aside class="occluding-panel" id="occluding-panel" data-eligible="true" data-reason="Opaque foreground panel with complete boundary">
             <h3>Quarterly planning</h3>
             <p>Three workspaces are ready for review. The next reporting period begins on Monday.</p>
-            <button type="button" id="review-button" data-eligible="false" data-reason="Control">Mark reviewed</button>
+            <button type="button" id="review-button" data-eligible="true" data-reason="Bounded control above minimum size">Mark reviewed</button>
           </aside>
         </div>
       </section>
