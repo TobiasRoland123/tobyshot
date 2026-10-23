@@ -42,6 +42,7 @@ final class AppCoordinator: ObservableObject {
     private var countdownPanel: NSPanel?
     private var recordingTimer: Timer?
     private var countdownTask: Task<Void, Never>?
+    private var codexHandoffTask: Task<Void, Never>?
     private var noticeTask: Task<Void, Never>?
     private var recordingStarted: Date?
     private var verifiedScreenPermission: Bool?
@@ -383,6 +384,15 @@ final class AppCoordinator: ObservableObject {
     func annotateLastScreenshot() {
         guard let item = store.items.first(where: { $0.kind == .image }) else { toast("No screenshots in history yet."); showLibrary?(); return }
         annotate(item)
+    }
+
+    func openLatestScreenshotInCodex() {
+        guard codexHandoffTask == nil else { return }
+        codexHandoffTask = Task {
+            defer { codexHandoffTask = nil }
+            do { try await CodexScreenshotHandoff.openLatestScreenshot(in: store) }
+            catch { report(error) }
+        }
     }
 
     func pinLastScreenshot() {

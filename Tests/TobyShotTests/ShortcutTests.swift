@@ -13,6 +13,57 @@ struct ShortcutTests {
 
     private var custom: ShortcutBinding { ShortcutBinding(keyCode: UInt32(kVK_ANSI_K), modifiers: UInt32(cmdKey | shiftKey | optionKey)) }
 
+    @Test func openLatestScreenshotInCodexIsAppendedGeneralGlobalAndUnassigned() {
+        #expect(ShortcutAction.openLatestScreenshotInCodex.rawValue == 27)
+        #expect(ShortcutAction.openLatestScreenshotInCodex.title == "Open Latest Screenshot in Codex")
+        #expect(ShortcutAction.openLatestScreenshotInCodex.group == .general)
+        #expect(ShortcutAction.openLatestScreenshotInCodex.scope == .global)
+        #expect(ShortcutAction.openLatestScreenshotInCodex.defaultBinding == nil)
+        #expect(ShortcutGroup.general.actions.contains(.openLatestScreenshotInCodex))
+        #expect(ShortcutAction.capturePreviousArea.rawValue == 26)
+    }
+
+    @Test func openLatestScreenshotInCodexCanBeAssignedChangedAndDisabledAcrossRelaunch() {
+        let (defaults, name) = isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let backend = FakeHotKeyBackend()
+        let manager = HotKeyManager(defaults: defaults, backend: backend)
+        let first = custom
+        let changed = ShortcutBinding(keyCode: UInt32(kVK_ANSI_J), modifiers: UInt32(cmdKey | shiftKey | optionKey))
+
+        #expect(manager.bindings[.openLatestScreenshotInCodex] == nil)
+        #expect(manager.setShortcut(first, for: .openLatestScreenshotInCodex) == nil)
+        #expect(backend.registered[.openLatestScreenshotInCodex] == first)
+        #expect(manager.setShortcut(changed, for: .openLatestScreenshotInCodex) == nil)
+        #expect(backend.registered[.openLatestScreenshotInCodex] == changed)
+
+        let reloaded = HotKeyManager(defaults: defaults, backend: FakeHotKeyBackend())
+        #expect(reloaded.bindings[.openLatestScreenshotInCodex] == changed)
+        #expect(reloaded.setShortcut(nil, for: .openLatestScreenshotInCodex) == nil)
+        let disabled = HotKeyManager(defaults: defaults, backend: FakeHotKeyBackend())
+        #expect(disabled.bindings[.openLatestScreenshotInCodex] == nil)
+        #expect(disabled.activeBinding(for: .openLatestScreenshotInCodex) == nil)
+    }
+
+    @Test func openLatestScreenshotInCodexGlobalActionDispatchesStableIDAndReportsConflicts() {
+        let (defaults, name) = isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let backend = FakeHotKeyBackend()
+        let manager = HotKeyManager(defaults: defaults, backend: backend)
+        manager.register()
+        var dispatched: [UInt32] = []
+        manager.onAction = { dispatched.append($0) }
+        #expect(manager.setShortcut(custom, for: .openLatestScreenshotInCodex) == nil)
+        backend.onAction?(ShortcutAction.openLatestScreenshotInCodex.rawValue)
+        #expect(dispatched == [27])
+
+        #expect(manager.setShortcut(custom, for: .captureWindow)?.contains("Open Latest Screenshot in Codex") == true)
+        #expect(manager.bindings[.captureWindow] == ShortcutAction.captureWindow.defaultBinding)
+        backend.system = [custom]
+        #expect(manager.setShortcut(custom, for: .openLatestScreenshotInCodex)?.contains("macOS") == true)
+        #expect(manager.bindings[.openLatestScreenshotInCodex] == custom)
+    }
+
     @Test func defaultsMatchTobyShot() {
         let (defaults, name) = isolatedDefaults()
         defer { defaults.removePersistentDomain(forName: name) }
