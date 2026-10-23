@@ -7,7 +7,7 @@ enum AnnotationShapeHandle: Equatable {
         switch annotation.kind {
         case .line:
             [.start, .end]
-        case .rectangle, .filledRectangle, .ellipse, .freehand, .step, .redaction, .pixelation:
+        case .rectangle, .filledRectangle, .ellipse, .freehand, .step, .redaction, .pixelation, .image:
             AnnotationResizeCorner.allCases.map(Self.corner)
         case .arrow, .text:
             []
@@ -41,7 +41,7 @@ struct AnnotationShapeEdit {
             let minY = points.map(\.y).min() ?? annotation.start.y
             let maxY = points.map(\.y).max() ?? annotation.start.y
             return CGRect(x: minX, y: minY, width: max(1, maxX - minX), height: max(1, maxY - minY))
-        case .rectangle, .filledRectangle, .ellipse, .line, .redaction, .pixelation:
+        case .rectangle, .filledRectangle, .ellipse, .line, .redaction, .pixelation, .image:
             return CGRect(x: min(annotation.start.x, annotation.end.x),
                           y: min(annotation.start.y, annotation.end.y),
                           width: abs(annotation.end.x - annotation.start.x),
@@ -88,6 +88,16 @@ struct AnnotationShapeEdit {
             resized.y = clamped(resized.y, from: anchor.y, towardPositive: growsDown)
 
             switch original.kind {
+            case .image:
+                let vector = CGPoint(x: dragged.x - anchor.x, y: dragged.y - anchor.y)
+                let lengthSquared = vector.x * vector.x + vector.y * vector.y
+                guard bounds.width > 0, bounds.height > 0 else { return original }
+                let scale = max(1 / min(bounds.width, bounds.height),
+                                1 + (delta.x * vector.x + delta.y * vector.y) / lengthSquared)
+                let resizedBounds = rect(from: anchor, to: CGPoint(x: anchor.x + vector.x * scale,
+                                                                  y: anchor.y + vector.y * scale))
+                edited.start = resizedBounds.origin
+                edited.end = CGPoint(x: resizedBounds.maxX, y: resizedBounds.maxY)
             case .freehand:
                 let resizedBounds = rect(from: anchor, to: resized)
                 func map(_ value: CGPoint) -> CGPoint {

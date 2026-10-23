@@ -382,11 +382,12 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
         viewRect(CGRect(origin: point, size: .zero), scale: imageScale).origin
     }
     func imagePoint(_ point: CGPoint, requireInside: Bool, clampToImage: Bool = true) -> CGPoint? {
-        guard let model, displayedImageRect.width > 0, displayedImageRect.height > 0,
-              !requireInside || displayedImageRect.contains(point) else { return nil }
+        guard let model, displayedImageRect.width > 0, displayedImageRect.height > 0 else { return nil }
         let imagePoint = CGPoint(x: (point.x - displayedImageRect.minX) / imageScale, y: (point.y - displayedImageRect.minY) / imageScale)
+        let bounds = model.tool == .pixelate ? model.imageBounds : CGRect(origin: .zero, size: model.pixelSize)
+        guard !requireInside || bounds.contains(imagePoint) else { return nil }
         guard clampToImage else { return imagePoint }
-        return CGPoint(x: min(model.pixelSize.width, max(0, imagePoint.x)), y: min(model.pixelSize.height, max(0, imagePoint.y)))
+        return CGPoint(x: min(bounds.maxX, max(bounds.minX, imagePoint.x)), y: min(bounds.maxY, max(bounds.minY, imagePoint.y)))
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -439,7 +440,7 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
             needsDisplay = true
             return
         }
-        // Pixelation is drawn over source pixels, but existing annotations outside them stay movable.
+        // Pixelation is bounded by the composed images; other annotations can extend beyond them.
         let startsOnAnnotation = imagePoint(location, requireInside: false, clampToImage: false)
             .flatMap { model.annotation(at: $0, tolerance: hitTolerance) } != nil
         let constrainToImage = model.tool == .crop || (model.tool == .pixelate && !startsOnAnnotation)

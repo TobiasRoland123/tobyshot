@@ -1,9 +1,39 @@
 import AppKit
+import ImageIO
+import UniformTypeIdentifiers
 
 /// Keeps an editor's file representation current without adding captures to history.
 final class AnnotationClipboard {
     let fileURL: URL
     private let pasteboard: NSPasteboard
+
+    static func image(from pasteboard: NSPasteboard = .general) -> CGImage? {
+        let preferred: [NSPasteboard.PasteboardType] = [.png, .tiff]
+        let otherImages = (pasteboard.types ?? []).filter {
+            !preferred.contains($0) && UTType($0.rawValue)?.conforms(to: .image) == true
+        }
+        for type in preferred + otherImages {
+            if let data = pasteboard.data(forType: type),
+               let source = CGImageSourceCreateWithData(data as CFData, nil),
+               let image = image(from: source) {
+                return image
+            }
+        }
+
+        guard let value = pasteboard.string(forType: .fileURL),
+              let url = URL(string: value), url.isFileURL,
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = image(from: source) else {
+            return nil
+        }
+        return image
+    }
+
+    private static func image(from source: CGImageSource) -> CGImage? {
+        guard let type = CGImageSourceGetType(source),
+              UTType(type as String)?.conforms(to: .image) == true else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+    }
 
     init(pasteboard: NSPasteboard = .general, directory: URL = FileManager.default.temporaryDirectory) {
         self.pasteboard = pasteboard

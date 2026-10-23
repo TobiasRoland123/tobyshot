@@ -4,7 +4,7 @@ import AppKit
 /// count within a tolerance; an outlined shape's empty interior does not.
 enum AnnotationHitTest {
     static func contains(_ annotation: EditorAnnotation, point: CGPoint, tolerance: CGFloat,
-                         imageSize: CGSize? = nil) -> Bool {
+                         imageSize: CGSize? = nil, imageBounds: CGRect? = nil) -> Bool {
         if annotation.kind == .text {
             return CGRect(origin: annotation.start, size: AnnotationTextLayout(annotation).selectionSize)
                 .insetBy(dx: -tolerance, dy: -tolerance).contains(point)
@@ -12,7 +12,7 @@ enum AnnotationHitTest {
         // Dash gaps are part of the visible stroke, so test the continuous path.
         var solid = annotation
         solid.arrowStroke = .solid
-        let geometry = AnnotationGeometry(solid, imageSize: imageSize)
+        let geometry = AnnotationGeometry(solid, imageSize: imageSize, imageBounds: imageBounds)
         guard !geometry.path.isEmpty,
               geometry.renderedBounds.insetBy(dx: -tolerance, dy: -tolerance).contains(point) else { return false }
         if !geometry.stroked, geometry.path.contains(point) { return true }
