@@ -34,9 +34,9 @@ final class AppCoordinator: ObservableObject {
     private var editors: [AnnotationEditorWindow] = []
     private var lastSavedEditor: AnnotationEditorWindow?
     private var lastSavedClipboardChangeCount: Int?
+    private var lastSavedPreviewID: UUID?
     private var pins: [NSWindowController] = []
-    private var preview: QuickAccessWindow?
-    private var previewItem: CaptureItem?
+    private(set) lazy var quickAccess = QuickAccessWindow(app: self)
     private var pinsHidden = false
     private var recordingPanel: NSPanel?
     private var countdownPanel: NSPanel?
@@ -87,9 +87,9 @@ final class AppCoordinator: ObservableObject {
         guard !isBusy, !isRecording, !isCheckingPermission else { return }
         guard checkCaptureReadiness() else { return }
         isBusy = true
-        preview?.close(); hideLibrary?()
+        quickAccess.hideForCapture(); hideLibrary?()
         countdownTask = Task { [self] in
-            defer { isBusy = false; countdown = nil; countdownPanel?.close(); countdownPanel = nil; countdownTask = nil }
+            defer { isBusy = false; countdown = nil; countdownPanel?.close(); countdownPanel = nil; countdownTask = nil; quickAccess.restoreAfterCapture() }
             do {
                 if delayed { try await runCountdown(Preferences.int("selfTimer")) }
                 else if mode != .area { try await Task.sleep(for: .milliseconds(250)) }
@@ -124,9 +124,9 @@ final class AppCoordinator: ObservableObject {
         if isRecording { stopRecording(); return }
         guard !isBusy, !isCheckingPermission else { return }
         guard checkCaptureReadiness() else { return }
-        isBusy = true; hideLibrary?(); preview?.close()
+        isBusy = true; hideLibrary?(); quickAccess.hideForCapture()
         countdownTask = Task { [self] in
-            defer { isBusy = false; countdown = nil; countdownPanel?.close(); countdownPanel = nil; countdownTask = nil }
+            defer { isBusy = false; countdown = nil; countdownPanel?.close(); countdownPanel = nil; countdownTask = nil; quickAccess.restoreAfterCapture() }
             do {
                 try await Task.sleep(for: .milliseconds(250))
                 let target = try await captureService.recordingTarget(area: area)
@@ -135,6 +135,7 @@ final class AppCoordinator: ObservableObject {
                 if Preferences.bool("recordingCountdown") { try await runCountdown(3) }
                 guard !Task.isCancelled else { return }
                 try await recorder.start(target: target) { [weak self] result in self?.recordingFinished(result) }
+                quickAccess.closeAll()
                 isRecording = true; recordingSeconds = 0; recordingStarted = Date()
                 recordingChanged?()
                 recordingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -215,7 +216,7 @@ final class AppCoordinator: ObservableObject {
     func pasteImage() {
         if let editor = lastSavedEditor, lastSavedClipboardChangeCount == NSPasteboard.general.changeCount {
             if !editors.contains(where: { $0 === editor }) { editors.append(editor) }
-            preview?.close()
+            if let id = lastSavedPreviewID { quickAccess.dismiss(id) }
             editor.showWindow(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -236,13 +237,14 @@ final class AppCoordinator: ObservableObject {
     func openEditor(_ image: NSImage, source: URL? = nil) -> AnnotationEditorWindow {
         editors.removeAll { $0.window?.isVisible == false }
         weak var editorWindow: NSWindow?
+        var savedPreviewID: UUID?
         let editor = AnnotationEditorWindow(image: image, sourceURL: source, shortcuts: shortcuts, onSave: { [weak self] image, ask in
             guard let self else { return false }
             do {
                 let item = try self.store.add(image: image)
                 if let url = try self.export(item, ask: ask || Preferences.bool("askFilename")) {
                     self.toast("Saved \(url.lastPathComponent)")
-                    if !ask { self.showPreview(item) }
+                    if !ask { self.showPreview(item); savedPreviewID = item.id }
                     else { editorWindow?.title = "\(url.lastPathComponent) — TobyShot" }
                     return true
                 }
@@ -259,6 +261,7 @@ final class AppCoordinator: ObservableObject {
         editor.onSaveAndClose = { [weak self] editor in
             self?.lastSavedEditor = editor
             self?.lastSavedClipboardChangeCount = NSPasteboard.general.changeCount
+            self?.lastSavedPreviewID = savedPreviewID
         }
         editorWindow = editor.window
         editors.append(editor); editor.showWindow(nil); editor.window?.makeKeyAndOrderFront(nil)
@@ -327,10 +330,7 @@ final class AppCoordinator: ObservableObject {
         do { try store.remove(item) } catch { report(error) }
     }
     func showPreview(_ item: CaptureItem) {
-        preview?.close()
-        previewItem = item
-        preview = QuickAccessWindow(item: item, app: self)
-        preview?.showWindow(nil)
+        quickAccess.show(item)
     }
 
     func pin(_ image: NSImage) {
@@ -406,15 +406,9 @@ final class AppCoordinator: ObservableObject {
         }
     }
     func closePins() { pins.forEach { $0.close() }; pins.removeAll(); pinsHidden = false }
-    func toggleOverlays() {
-        guard let preview, !preview.isClosed else { return }
-        if preview.window?.isVisible == true { preview.window?.orderOut(nil) }
-        else { preview.window?.orderFrontRegardless() }
-    }
-    func saveOverlays() {
-        if let item = previewItem, preview?.isClosed == false { save(item) }
-    }
-    func closeOverlays() { preview?.close(); preview = nil; previewItem = nil }
+    func toggleOverlays() { quickAccess.toggleVisibility() }
+    func saveOverlays() { quickAccess.items.forEach { save($0) } }
+    func closeOverlays() { quickAccess.closeAll() }
 
     func toast(_ text: String) {
         noticeTask?.cancel(); notice = text
