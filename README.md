@@ -64,6 +64,8 @@ On first launch, TobyShot opens a short setup checklist. Its default shortcuts (
 
 You can skip setup and reopen it later from **Settings → General → Setup**.
 
+TobyShot also asks once whether to launch when you sign in to your Mac, during setup or after updating an existing installation. Choose **Enable launch at login** or **No thanks**; it’s optional. You can change your choice later in **Settings → General → Launch at login**, where TobyShot also shows if macOS approval is still needed.
+
 ### Allow screen capture
 
 1. Click **Allow Access** in setup, or **Check access** or **Capture area** in TobyShot.

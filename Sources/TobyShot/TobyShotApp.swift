@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import ServiceManagement
 
 @main
 struct TobyShotApp {
@@ -26,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private var statusItem: NSStatusItem?
     private let hotKeys = HotKeyManager()
     private let updater = AppUpdater()
+    private let launchAtLogin = LaunchAtLogin()
     private var preferencesObserver: NSObjectProtocol?
     private var pruneTimer: Timer?
     private var screenshotRetentionDays = 0
@@ -85,9 +87,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if CommandLine.arguments.contains("--demo") { coordinator.openDemo() }
         if CommandLine.arguments.contains("--settings") { showSettings() }
         if CommandLine.arguments.contains("--setup") || setup.shouldShowOnLaunch { showSetup() }
+        else { showLaunchAtLoginPrompt() }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        launchAtLogin.refresh()
         if coordinator != nil { hotKeys.register(); pruneCaptureHistory() }
     }
 
@@ -153,7 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             window.titlebarAppearsTransparent = true
             window.isReleasedWhenClosed = false
             window.delegate = self
-            window.contentView = NSHostingView(rootView: SettingsView(shortcuts: hotKeys, updater: updater, navigation: settingsNavigation,
+            window.contentView = NSHostingView(rootView: SettingsView(shortcuts: hotKeys, updater: updater, launchAtLogin: launchAtLogin, navigation: settingsNavigation,
                                                                       openSetup: { [weak self] in self?.showSetup() }).preferredColorScheme(.dark))
             window.minSize = CGSize(width: 790, height: 620)
             window.center(); window.setFrameAutosaveName("TobyShotSettings")
@@ -189,6 +193,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if setupWindow?.isVisible != true { setup.begin() }
         NSApp.setActivationPolicy(.regular)
         setupWindow?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        showLaunchAtLoginPrompt(attachedTo: setupWindow)
+    }
+
+    private func showLaunchAtLoginPrompt(attachedTo parent: NSWindow? = nil) {
+        guard launchAtLogin.claimPrompt() else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Launch TobyShot when you sign in?"
+        alert.informativeText = "Keep TobyShot ready for screenshots whenever you sign in to your Mac. This is optional. You can change it later in Settings → General → Launch at login."
+        alert.addButton(withTitle: "Enable launch at login")
+        alert.addButton(withTitle: "No thanks").keyEquivalent = "\u{1b}"
+        let respond: (NSApplication.ModalResponse) -> Void = { [weak self, weak parent] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            self.launchAtLogin.setEnabled(true)
+            self.showLaunchAtLoginResult(attachedTo: parent)
+        }
+        if let parent { alert.beginSheetModal(for: parent, completionHandler: respond) }
+        else {
+            NSApp.activate(ignoringOtherApps: true)
+            respond(alert.runModal())
+        }
+    }
+
+    private func showLaunchAtLoginResult(attachedTo parent: NSWindow?) {
+        let error = launchAtLogin.error
+        let needsApproval = launchAtLogin.requiresApproval
+        guard error != nil || needsApproval else { return }
+        let alert = NSAlert()
+        alert.alertStyle = error == nil ? .informational : .warning
+        alert.messageText = needsApproval ? "Launch at login needs approval" : "Couldn’t update Login Items"
+        alert.informativeText = error ?? ""
+        if needsApproval {
+            if error != nil { alert.informativeText += "\n\n" }
+            alert.informativeText += "macOS needs your approval before TobyShot can launch when you sign in. Enable TobyShot in System Settings → General → Login Items. You can approve it later."
+            alert.addButton(withTitle: "Open Login Items")
+            alert.addButton(withTitle: "Not Now").keyEquivalent = "\u{1b}"
+        } else { alert.addButton(withTitle: "OK") }
+        let respond: (NSApplication.ModalResponse) -> Void = { response in
+            if needsApproval && response == .alertFirstButtonReturn { SMAppService.openSystemSettingsLoginItems() }
+        }
+        if let parent { alert.beginSheetModal(for: parent, completionHandler: respond) }
+        else { respond(alert.runModal()) }
     }
 
     func windowWillClose(_ notification: Notification) {
