@@ -1,8 +1,24 @@
-# TobyShot annotation editor
+# TobyShot
 
-The annotation editor is the workspace for marking up a screenshot. Its language distinguishes the tool used to create annotations from the annotations being edited.
+TobyShot captures screenshots and provides an annotation editor for marking them up. Its language distinguishes suggested capture areas, annotation tools, and editable annotations.
 
 ## Language
+
+### Capture
+
+**Suggested area**:
+A visually distinct, bounded container of screen content proposed for capture, such as a card, panel, dialog, or framed image. Content grouped only by meaning, such as an unbounded paragraph inside a card, is not a separate suggested area.
+
+**Nested suggested area**:
+A suggested area contained within a larger suggested area, such as a separately framed chart inside a bordered card.
+
+**Nesting path**:
+The sequence from an initially hovered suggested area through its enclosing suggested areas, such as chart → card → panel.
+
+**Individual control**:
+A single interactive element, such as a button, checkbox, or input field, distinct from the content container that holds it.
+
+### Annotation editor
 
 **Annotation**:
 An individual editable object in the composition, such as an arrow, shape, text label, numbered step, redaction, pixelated region, or pasted image.
@@ -40,6 +56,14 @@ The unfilled area enclosed by an annotation outline, excluding any other annotat
 Where a gesture starts on an existing annotation: an editing handle, or a visible stroke, outline, or filled area within a small tolerance. With any drawing tool active, a gesture that starts on an editing target edits that annotation; one that starts on empty canvas, an empty interior, or a pasted image creates a new annotation. Handles take priority, and the choice holds for the whole gesture.
 
 ## Example dialogue
+
+Developer: "Is the paragraph inside that bordered card a separate suggested area?"
+
+User: "No. The card is the suggested area; the paragraph has no distinct visual boundary of its own."
+
+Developer: "And the separately framed chart inside the card?"
+
+User: "That is a nested suggested area. Its nesting path is chart, card, then the surrounding panel. A sibling chart has its own path through the same card and panel."
 
 Developer: "When you say the arrow is selected, do you mean the Arrow tool or an annotation?"
 
