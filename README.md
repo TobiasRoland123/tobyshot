@@ -38,6 +38,7 @@ If capture still fails, quit TobyShot, remove only its entry from **Screen & Sys
 ## Features
 
 - Capture an area across multiple monitors, a window, or a full screen, with an optional timer.
+- In Capture Area, hover over bordered containers, scroll through enclosing areas, then click to capture. Drag for a custom rectangle.
 - Annotate, crop, redact, copy, save, or pin screenshots.
 - Paste screenshots into the annotation canvas with ⌘V, then move and resize them to make insets or side-by-side comparisons.
 - Keep recent captures stacked in Quick Access, and drag any of them into another app.
@@ -75,3 +76,13 @@ Keep `.local-signing` across rebuilds so the app keeps its identity. Never commi
 bash scripts/test.sh          # Run tests
 bash scripts/build.sh release # Build build/TobyShot.app
 ```
+
+### Area suggestions prototype
+
+Capture Area detects bordered containers on-device from the frozen screen images, after the selector is usable. A click allows 4 points of movement; dragging farther starts a manual rectangle at the press point. Scrolling selects an enclosing or enclosed area and centers the pointer. The original nesting path stays selected until the pointer leaves it. Trackpad motion accumulates over 24 points, with at least 150 ms between steps; momentum is ignored. Recording and dedicated window capture use their existing selectors.
+
+Open `Resources/FeatureMocks/area-suggestions.html` in a browser at 1100 × 850 to try the nested charts, controls, rounded borders, shadows, clipping, and occlusion cases. Its light and dark versions both produced the four expected suggestions in initial browser-image checks. The negative examples retained the three visible containers and omitted the clipped and obscured parents. Optimized detector probes took about 0.29 seconds at both 1× and 2× on the development machine; these measure detection in isolation, not complete capture readiness. The app logs readiness and candidate count under subsystem `TobyShot`, category `AreaSuggestions`.
+
+This is a feasibility prototype, not a semantic UI classifier. It requires clear border bands on all four sides and a minimum size of 120 × 80 points. Borderless panels, small cards, very faint or thick borders, and containers touching display or window edges may be missed. Typical buttons, checkboxes, and inputs are filtered by size; unusually large controls can still be mistaken for containers. Pixel evidence and window ordering reject uncertain visibility, but cannot prove arbitrary in-page occlusion or identify every clipped element. Manual dragging remains available for these cases.
+
+Before treating the interaction as release-ready, try a mouse wheel and trackpad (including momentum and path endpoints), and physically arranged displays above, below, and left of the main screen at mixed scales. Check pointer recentering, Escape, Capture Previous Area, and the configured copy/save/annotate/pin actions with the fixture. Automated tests cover selection state, event routing, pixel crops, visibility, and coordinate conversion; they do not establish how recentering feels on hardware.
