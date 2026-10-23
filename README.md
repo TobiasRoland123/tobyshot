@@ -39,6 +39,7 @@ If capture still fails, quit TobyShot, remove only its entry from **Screen & Sys
 
 - Capture an area, window, or full screen, with an optional timer.
 - Annotate, crop, redact, copy, save, or pin screenshots.
+- Keep recent captures stacked in Quick Access, and drag any of them into another app.
 - Record your screen with optional system audio and microphone.
 - Recognize text, search local capture history by title or by the text inside screenshots, and customize shortcuts.
 
