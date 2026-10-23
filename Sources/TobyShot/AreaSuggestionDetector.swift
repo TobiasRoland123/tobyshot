@@ -4,7 +4,9 @@ import Vision
 /// A conservative, on-device prototype. Vision proposes contours; full-resolution
 /// pixels must confirm four sharp sides before a rectangle becomes selectable.
 enum AreaSuggestionDetector {
-    private static let contourDimension = 1280
+    // Contour extraction dominates readiness. Pool thin edges into this smaller
+    // proposal image; refine every accepted boundary against the original pixels.
+    private static let contourDimension = 640
     // Front to back, in Quartz coordinates. Read before the selection panels exist.
     static func visibleWindowFrames() -> [CGRect] {
         let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []

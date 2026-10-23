@@ -77,6 +77,19 @@ struct AreaSuggestionDetectorTests {
         #expect(try detect(display) == [global(child, display: display)])
     }
 
+    @Test(arguments: [1, 2])
+    func pooledProposalsKeepThinBordersAndNearbyNestedContainers(scale: Int) throws {
+        // Offset the edges from the pooling grid and exercise the smallest
+        // eligible containers on an image whose dimensions do not divide evenly.
+        let parent = CGRect(x: 81, y: 73, width: 420, height: 300)
+        let child = CGRect(x: 97, y: 91, width: 126, height: 86)
+        let sibling = CGRect(x: 239, y: 91, width: 126, height: 86)
+        let display = try fixture(scale: scale, width: 907, height: 607) { context in
+            for rect in [parent, child, sibling] { box(rect, borderWidth: 1, context: context) }
+        }
+        #expect(Set(try detect(display)) == Set([parent, child, sibling].map { global($0, display: display) }))
+    }
+
     @Test func obscuredParentIsOmittedButVisibleChildStillQualifies() throws {
         let parent = CGRect(x: 40, y: 40, width: 750, height: 450)
         let child = CGRect(x: 70, y: 100, width: 220, height: 200)
@@ -111,8 +124,7 @@ struct AreaSuggestionDetectorTests {
         #expect(!AreaSuggestionDetector.isVisible(CGRect(x: 0, y: 0, width: 200, height: 200), imageSize: size, displayFrame: frame, windows: [frame]))
     }
 
-    private func fixture(scale: Int = 1, draw: (CGContext) -> Void) throws -> CaptureDisplayImage {
-        let width = 900, height = 600
+    private func fixture(scale: Int = 1, width: Int = 900, height: Int = 600, draw: (CGContext) -> Void) throws -> CaptureDisplayImage {
         let context = try #require(CGContext(data: nil, width: width * scale, height: height * scale,
             bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
@@ -125,12 +137,14 @@ struct AreaSuggestionDetectorTests {
         return CaptureDisplayImage(frame: CGRect(x: -900, y: -200, width: width, height: height), image: try #require(context.makeImage()))
     }
 
-    private func box(_ rect: CGRect, radius: CGFloat = 0, border: CGFloat = 0.25, fill: CGFloat = 1, context: CGContext) {
+    private func box(_ rect: CGRect, radius: CGFloat = 0, border: CGFloat = 0.25, fill: CGFloat = 1,
+                     borderWidth: CGFloat = 2, context: CGContext) {
         context.setFillColor(CGColor(gray: border, alpha: 1))
         context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
         context.fillPath()
         context.setFillColor(CGColor(gray: fill, alpha: 1))
-        context.addPath(CGPath(roundedRect: rect.insetBy(dx: 2, dy: 2), cornerWidth: max(0, radius - 2), cornerHeight: max(0, radius - 2), transform: nil))
+        context.addPath(CGPath(roundedRect: rect.insetBy(dx: borderWidth, dy: borderWidth),
+                              cornerWidth: max(0, radius - borderWidth), cornerHeight: max(0, radius - borderWidth), transform: nil))
         context.fillPath()
     }
 
