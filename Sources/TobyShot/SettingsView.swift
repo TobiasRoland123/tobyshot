@@ -5,6 +5,7 @@ import ServiceManagement
 struct SettingsView: View {
     @ObservedObject var shortcuts: HotKeyManager
     @ObservedObject var updater: AppUpdater
+    @ObservedObject var launchAtLogin: LaunchAtLogin
     let navigation: SettingsNavigation
     let openSetup: () -> Void
     @AppStorage("showMenuBar") private var showMenuBar = true
@@ -76,7 +77,6 @@ struct SettingsView: View {
     @AppStorage(SetupAssistant.completedKey) private var setupCompleted = false
 
     @State private var selection: SettingsSection = .general
-    @State private var loginEnabled = SMAppService.mainApp.status == .enabled
     @State private var loginError: String?
 
     private let accent = Color(red: 0.26, green: 0.62, blue: 1.0)
@@ -91,7 +91,7 @@ struct SettingsView: View {
         .background(Color(white: 0.10))
         .preferredColorScheme(.dark)
         .tint(accent)
-        .onAppear(perform: refreshLoginStatus)
+        .onAppear { launchAtLogin.refresh() }
         .onReceive(navigation.$requestedSection.compactMap { $0 }) { section in
             selection = section
             navigation.requestedSection = nil
@@ -190,8 +190,19 @@ struct SettingsView: View {
     private var generalPage: some View {
         VStack(alignment: .leading, spacing: 20) {
             group("App") {
-                ToggleRow("Launch at login", isOn: $loginEnabled, detail: "Starts TobyShot when you sign in.")
-                    .onChange(of: loginEnabled) { _, enabled in updateLoginItem(enabled) }
+                ToggleRow("Launch at login", isOn: Binding(
+                    get: { launchAtLogin.isRegistered },
+                    set: { enabled in
+                        launchAtLogin.setEnabled(enabled)
+                        loginError = launchAtLogin.error
+                    }
+                ), detail: launchAtLogin.requiresApproval
+                    ? "Waiting for approval in System Settings → General → Login Items."
+                    : "Starts TobyShot when you sign in.")
+                if launchAtLogin.requiresApproval {
+                    Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
+                        .controlSize(.small)
+                }
                 ToggleRow("Show menu bar icon", isOn: $showMenuBar)
             }
             group("Setup") {
@@ -545,27 +556,6 @@ struct SettingsView: View {
     private func chooseExportFolder() {
         guard let url = ExportLocation.choose(startingAt: URL(fileURLWithPath: expandedExportPath, isDirectory: true)) else { return }
         exportPath = ExportLocation.storedPath(for: url)
-    }
-
-    private func refreshLoginStatus() {
-        let status = SMAppService.mainApp.status
-        loginEnabled = status == .enabled || status == .requiresApproval
-    }
-
-    private func updateLoginItem(_ enabled: Bool) {
-        let status = SMAppService.mainApp.status
-        if enabled == (status == .enabled || status == .requiresApproval) { return }
-        do {
-            if enabled {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
-            }
-            refreshLoginStatus()
-        } catch {
-            refreshLoginStatus()
-            loginError = error.localizedDescription
-        }
     }
 }
 

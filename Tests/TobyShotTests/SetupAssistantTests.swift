@@ -177,6 +177,27 @@ struct SetupAssistantTests {
         #expect(relaunched.isComplete)
         #expect(!relaunched.shouldShowOnLaunch)
     }
+
+    @Test func dismissingLaunchAtLoginDoesNotBlockSetupOrPromptAgainWhenReopened() async {
+        let (setup, _, defaults, name) = makeSetup()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let login = LaunchAtLogin(defaults: defaults, readStatus: { .notRegistered },
+                                  register: { Issue.record("Declining must not register a login item") }, unregister: {})
+        #expect(setup.shouldShowOnLaunch)
+        #expect(login.claimPrompt())
+        // Dismiss without registering, then complete the required setup steps.
+        await setup.recheck()
+        let folder = temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        #expect(setup.chooseExportLocation(folder))
+        #expect(setup.finish())
+
+        setup.begin()
+        #expect(!login.claimPrompt())
+        let relaunchedLogin = LaunchAtLogin(defaults: UserDefaults(suiteName: name)!, readStatus: { .notRegistered },
+                                            register: {}, unregister: {})
+        #expect(!relaunchedLogin.claimPrompt())
+    }
 }
 
 private final class SetupHotKeyBackend: HotKeyBackend {
