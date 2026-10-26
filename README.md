@@ -42,8 +42,8 @@ To use Codex, assign **Open Latest Screenshot in Codex** under **Settings → Sh
 **We don't have a paid Apple Developer membership.** TobyShot is self-signed and isn't notarized by Apple, so macOS may block it on first launch. Follow the steps below if you trust this repository and your download hasn't been modified.
 
 1. Download `TobyShot-<version>.dmg` from **Assets** on the [latest release](https://github.com/TobiasRoland123/tobyshot/releases/latest). You don't need the **Source code** downloads.
-2. Quit TobyShot if it's already running. Open the DMG and drag **TobyShot.app** into **Applications**, replacing the old copy if you're upgrading.
-3. Eject the DMG and open **TobyShot** from **Applications**.
+2. Open the DMG and drag **TobyShot.app** into **Applications**.
+3. open **TobyShot** from **Applications**.
 4. If macOS says the developer can't be verified or Apple can't check the app for malicious software, dismiss the warning. Go to **System Settings → Privacy & Security**, scroll to **Security**, and click **Open Anyway** for TobyShot.
 5. Confirm **Open** and follow any macOS confirmation prompts. Future launches should open normally.
 
