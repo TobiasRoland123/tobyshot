@@ -928,7 +928,7 @@ private struct AnnotationEditorRoot: View {
                 }
             } label: {
                 HStack(spacing: 5) {
-                    Image(systemName: "circle.fill").foregroundStyle(Color(nsColor: model.currentColor)).font(.system(size: 16))
+                    Image(nsImage: colorSwatch(model.currentColor)).renderingMode(.original)
                     if model.showColorNames, let name = palette.first(where: { $0.1 == model.currentColor })?.0 { Text(name) }
                 }.padding(5)
             }.menuStyle(.borderlessButton).fixedSize().help("Annotation color")
@@ -942,6 +942,19 @@ private struct AnnotationEditorRoot: View {
             } label: { Label("Background", systemImage: "square.on.square") }
                 .menuStyle(.borderlessButton).fixedSize().help("Canvas background (\(shortcuts.label(for: .backgroundTool)))")
         }.fixedSize()
+    }
+
+    private func colorSwatch(_ color: NSColor) -> NSImage {
+        // Native menu labels discard SwiftUI symbol colors, so draw a full-color image.
+        NSImage(size: NSSize(width: 16, height: 16), flipped: false) { bounds in
+            let circle = NSBezierPath(ovalIn: bounds.insetBy(dx: 0.5, dy: 0.5))
+            color.setFill()
+            circle.fill()
+            NSColor.white.withAlphaComponent(0.45).setStroke()
+            circle.lineWidth = 1
+            circle.stroke()
+            return true
+        }
     }
 
     private var historyControls: some View {
