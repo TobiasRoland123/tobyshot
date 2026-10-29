@@ -47,6 +47,9 @@ struct ShortcutBinding: Codable, Hashable {
             return "Include Command (⌘), Option (⌥), or Control (⌃) in a global shortcut."
         }
         guard modifiers & ~Self.modifierMask == 0, !menuKey.isEmpty else { return "Choose a letter, number, function key, or navigation key." }
+        if action.scope == .editor, keyCode == UInt32(kVK_Space), modifiers == 0 {
+            return "Space is reserved for panning the editor. Choose another key or add a modifier."
+        }
         if [kVK_Escape, kVK_Delete, kVK_ForwardDelete].contains(Int(keyCode)), modifiers == 0 {
             return "Escape and Delete are reserved for canceling and removing objects."
         }
