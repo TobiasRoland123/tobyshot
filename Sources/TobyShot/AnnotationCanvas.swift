@@ -71,17 +71,36 @@ final class AnnotationScrollView: NSScrollView {
     }
 
     override func magnify(with event: NSEvent) {
+        guard event.magnification.isFinite, event.magnification != 0 else { return }
+        zoom(by: max(0.01, 1 + event.magnification), at: event.locationInWindow)
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard let canvas = documentView as? AnnotationCanvasView,
+              !canvas.isDraggingAnnotation, !canvas.isPanning else { return }
+        guard event.modifierFlags.intersection([.command, .option, .control, .shift]) == .command else {
+            super.scrollWheel(with: event)
+            return
+        }
+        let delta = event.scrollingDeltaY
+        guard delta.isFinite, delta != 0 else { return }
+        // A wheel notch is a zoom step; precise scrolling supplies smaller pixel deltas.
+        let exponent = min(10, max(-10, delta * (event.hasPreciseScrollingDeltas ? 0.01 : 1)))
+        zoom(by: pow(1.1, exponent), at: event.locationInWindow)
+    }
+
+    private func zoom(by factor: CGFloat, at windowPoint: CGPoint) {
         guard let canvas = documentView as? AnnotationCanvasView, let model = canvas.model,
-              !canvas.isDraggingAnnotation, event.magnification.isFinite, event.magnification != 0 else { return }
+              !canvas.isDraggingAnnotation, !canvas.isPanning else { return }
         // Resolve any pending control or window-size change before mapping the pointer.
         layoutSubtreeIfNeeded()
         let scale = canvas.currentScale
         // A large image can fit below the manual minimum. Pinching out must not enlarge it.
-        guard event.magnification > 0 || scale > AnnotationEditorModel.minimumZoom else { return }
-        let location = canvas.convert(event.locationInWindow, from: nil)
+        guard factor > 1 || scale > AnnotationEditorModel.minimumZoom else { return }
+        let location = canvas.convert(windowPoint, from: nil)
         guard let point = canvas.imagePoint(location, requireInside: false, clampToImage: false) else { return }
         zoomAnchor = (point, CGPoint(x: location.x - contentView.bounds.minX, y: location.y - contentView.bounds.minY))
-        model.setZoom(scale * max(0.01, 1 + event.magnification))
+        model.setZoom(scale * factor)
         needsLayout = true
         layoutSubtreeIfNeeded()
     }
@@ -119,6 +138,10 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
     private var resizingText = false
     private var editingArrow = false
     private var editingShape = false
+    private var duplicateDragOrigin: CGPoint?
+    private var duplicateDragStarted = false
+    private var panStart: (location: CGPoint, origin: CGPoint, button: Int)?
+    private var resignKeyObserver: NSObjectProtocol?
     private(set) var hoveredAnnotationID: UUID?
     private var pointerTrackingArea: NSTrackingArea?
     private var textEditor: AnnotationTextView?
@@ -128,6 +151,7 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     var isDraggingAnnotation: Bool { dragStart != nil }
+    var isPanning: Bool { panStart != nil }
     var currentScale: CGFloat { updateImageGeometry(); return imageScale }
 
     var layoutCanvasBounds: CGRect {
@@ -307,6 +331,7 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
     }
 
     func refreshPointerFeedback(at suppliedLocation: CGPoint? = nil) {
+        if isPanning { NSCursor.closedHand.set(); return }
         guard dragStart == nil,
               let location = suppliedLocation ?? window.map({ convert($0.mouseLocationOutsideOfEventStream, from: nil) }) else { return }
         updateImageGeometry()
@@ -316,7 +341,12 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
         }
         updateHover(at: location)
         guard window?.isKeyWindow == true else { return }
+        if model?.isPanKeyDown == true { NSCursor.openHand.set(); return }
         let target = pointerTarget(at: location)
+        if target != .canvas, model?.duplicateDragBinding.matches(NSEvent.modifierFlags) == true {
+            NSCursor.dragCopy.set()
+            return
+        }
         // The native text editor manages its own cursor except over handles.
         if let textEditor, textEditor.frame.contains(location), case .canvas = target { return }
         cursor(for: target).set()
@@ -410,13 +440,94 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
     override func magnify(with event: NSEvent) {
         enclosingScrollView?.magnify(with: event)
     }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let resignKeyObserver { NotificationCenter.default.removeObserver(resignKeyObserver) }
+        resignKeyObserver = nil
+        panStart = nil
+        if let window {
+            resignKeyObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.panStart = nil
+                    self?.model?.isPanKeyDown = false
+                }
+            }
+        }
+    }
+
+    deinit {
+        if let resignKeyObserver { NotificationCenter.default.removeObserver(resignKeyObserver) }
+    }
+
+    private func beginPan(with event: NSEvent) {
+        guard !isDraggingAnnotation, !isPanning, let scroll = enclosingScrollView else { return }
+        panStart = (event.locationInWindow, scroll.contentView.bounds.origin, event.buttonNumber)
+        hoveredAnnotationID = nil
+        needsDisplay = true
+        NSCursor.closedHand.set()
+    }
+
+    private func continuePan(with event: NSEvent) {
+        guard let panStart, let scroll = enclosingScrollView else { return }
+        // Convert both window points together so scrolling cannot move the drag anchor.
+        let start = scroll.contentView.convert(panStart.location, from: nil)
+        let current = scroll.contentView.convert(event.locationInWindow, from: nil)
+        var proposed = scroll.contentView.bounds
+        proposed.origin = CGPoint(x: panStart.origin.x - (current.x - start.x),
+                                  y: panStart.origin.y - (current.y - start.y))
+        scroll.contentView.scroll(to: scroll.contentView.constrainBoundsRect(proposed).origin)
+        scroll.reflectScrolledClipView(scroll.contentView)
+    }
+
+    private func endPan(with event: NSEvent) {
+        continuePan(with: event)
+        panStart = nil
+        refreshPointerFeedback(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        guard event.buttonNumber == 2 else { super.otherMouseDown(with: event); return }
+        beginPan(with: event)
+    }
+
+    override func otherMouseDragged(with event: NSEvent) {
+        guard panStart?.button == event.buttonNumber else { super.otherMouseDragged(with: event); return }
+        continuePan(with: event)
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        guard panStart?.button == event.buttonNumber else { super.otherMouseUp(with: event); return }
+        endPan(with: event)
+    }
+
     override func mouseDown(with event: NSEvent) {
+        if model?.isPanKeyDown == true { beginPan(with: event); return }
+        guard !isPanning else { return }
         updateImageGeometry()
         lastDrawingPoint = nil
         clampsDragToImage = false
         let location = convert(event.locationInWindow, from: nil)
         // A press decides its operation from the same target that hover shows.
         updateHover(at: location)
+        if let model, model.duplicateDragBinding.matches(event.modifierFlags),
+           let point = imagePoint(location, requireInside: false, clampToImage: false) {
+            let id: UUID?
+            switch pointerTarget(at: location) {
+            case let .handle(handle): id = handle.annotationID
+            case let .move(target), let .editText(target): id = target
+            case .canvas: id = nil
+            }
+            if let id, model.beginDuplicateDrag(id, at: point) {
+                window?.makeFirstResponder(self)
+                duplicateDragOrigin = event.locationInWindow
+                duplicateDragStarted = false
+                dragStart = point
+                synchronizeTextEditor()
+                needsDisplay = true
+                return
+            }
+        }
         let extendingSelection = model?.tool == .select && event.modifierFlags.contains(.shift)
         let handle = extendingSelection ? nil : editHandle(at: location)
         window?.makeFirstResponder(self)
@@ -461,28 +572,47 @@ final class AnnotationCanvasView: NSView, NSTextViewDelegate {
         needsDisplay = true
     }
     override func mouseDragged(with event: NSEvent) {
+        if panStart?.button == 0 { continuePan(with: event); return }
         guard dragStart != nil, let point = imagePoint(convert(event.locationInWindow, from: nil), requireInside: false, clampToImage: clampsDragToImage) else { return }
+        guard shouldContinueDuplicateDrag(with: event) else { return }
         if lastDrawingPoint != nil { lastDrawingPoint = point }
         model?.continueDrag(to: point, constrained: event.modifierFlags.contains(.shift)); needsDisplay = true
     }
     override func flagsChanged(with event: NSEvent) {
+        if dragStart == nil { refreshPointerFeedback(); return }
         guard dragStart != nil, let point = lastDrawingPoint else { return }
         model?.continueDrag(to: point, constrained: event.modifierFlags.contains(.shift))
         needsDisplay = true
     }
     override func mouseUp(with event: NSEvent) {
+        if panStart?.button == 0 { endPan(with: event); return }
         guard dragStart != nil else { return }
         let location = convert(event.locationInWindow, from: nil)
-        if model?.selectionRect != nil || editingShape,
+        if duplicateDragOrigin != nil {
+            if shouldContinueDuplicateDrag(with: event),
+               let point = imagePoint(location, requireInside: false, clampToImage: false) {
+                model?.continueDrag(to: point)
+            }
+        } else if model?.selectionRect != nil || editingShape,
            let point = imagePoint(location, requireInside: false, clampToImage: false) {
             model?.continueDrag(to: point)
         } else if let point = lastDrawingPoint {
             model?.continueDrag(to: point, constrained: event.modifierFlags.contains(.shift))
         }
         lastDrawingPoint = nil
+        duplicateDragOrigin = nil
+        duplicateDragStarted = false
         dragStart = nil; clampsDragToImage = false; resizingText = false; editingArrow = false; editingShape = false; model?.endDrag(); needsDisplay = true
         enclosingScrollView?.needsLayout = true
         refreshPointerFeedback(at: location)
+    }
+
+    private func shouldContinueDuplicateDrag(with event: NSEvent) -> Bool {
+        guard let origin = duplicateDragOrigin else { return true }
+        if !duplicateDragStarted {
+            duplicateDragStarted = hypot(event.locationInWindow.x - origin.x, event.locationInWindow.y - origin.y) >= 3
+        }
+        return duplicateDragStarted
     }
     // Keyboard commands are dispatched by the window using the shared shortcut settings.
 }

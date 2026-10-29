@@ -7,6 +7,15 @@ struct ShortcutSettingsView: View {
     @State private var recordingAction: ShortcutAction?
 
     @State private var search = ""
+    @AppStorage(AnnotationDuplicateDragBinding.preferenceKey)
+    private var duplicateDragBindingRawValue = AnnotationDuplicateDragBinding.option.rawValue
+
+    private var duplicateDragBinding: Binding<AnnotationDuplicateDragBinding> {
+        Binding(
+            get: { AnnotationDuplicateDragBinding(rawValue: duplicateDragBindingRawValue) ?? .option },
+            set: { duplicateDragBindingRawValue = $0.rawValue }
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -25,7 +34,13 @@ struct ShortcutSettingsView: View {
                 if !actions.isEmpty { shortcutGroup(group.rawValue, actions: actions) }
             }
 
-            if ShortcutAction.allCases.allSatisfy({ !search.isEmpty && !$0.title.localizedCaseInsensitiveContains(search) && !$0.group.rawValue.localizedCaseInsensitiveContains(search) }) {
+            if showsMouseGestures {
+                mouseGesturesSection
+            }
+
+            if !search.isEmpty,
+               ShortcutAction.allCases.allSatisfy({ !$0.title.localizedCaseInsensitiveContains(search) && !$0.group.rawValue.localizedCaseInsensitiveContains(search) }),
+               !showsMouseGestures {
                 Text("No matching shortcuts").foregroundStyle(.secondary)
             }
 
@@ -36,15 +51,61 @@ struct ShortcutSettingsView: View {
 
             HStack {
                 Spacer()
-                Button("Restore Defaults", action: shortcuts.resetDefaults)
-                    .controlSize(.small)
-                    .accessibilityHint("Restore all keyboard shortcuts to their default key combinations.")
+                Button("Restore Defaults") {
+                    shortcuts.resetDefaults()
+                    duplicateDragBindingRawValue = AnnotationDuplicateDragBinding.option.rawValue
+                }
+                .controlSize(.small)
+                .accessibilityHint("Restore keyboard shortcuts and mouse gesture settings to their defaults.")
             }
         }
         .sheet(item: $recordingAction) { action in
             ShortcutRecorderSheet(action: action, shortcuts: shortcuts) {
                 recordingAction = nil
             }
+        }
+    }
+
+    private var showsMouseGestures: Bool {
+        search.isEmpty || "Mouse Gestures Duplicate annotations by dragging Option Alt Command Shift Space left drag middle drag pan wheel scroll zoom modifier"
+            .localizedCaseInsensitiveContains(search)
+    }
+
+    private var mouseGesturesSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Mouse Gestures")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 3)
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Duplicate annotations by dragging")
+                        .font(.system(size: 13))
+                    Spacer(minLength: 8)
+                    Picker("Duplicate drag modifier", selection: duplicateDragBinding) {
+                        ForEach(AnnotationDuplicateDragBinding.allCases) { binding in
+                            Text(binding.title).tag(binding)
+                        }
+                    }
+                    .labelsHidden()
+                    .accessibilityLabel("Duplicate drag modifier")
+                    Button("Reset") {
+                        duplicateDragBindingRawValue = AnnotationDuplicateDragBinding.option.rawValue
+                    }
+                    .controlSize(.small)
+                    .disabled(duplicateDragBinding.wrappedValue == .option)
+                    .accessibilityLabel("Restore Option-drag duplication")
+                }
+
+                Text("Space + left drag or middle drag pans. Command + wheel zooms. Duplicate with the chosen modifier + left drag. Space panning takes precedence; Shift alone is reserved for selection, and Control-click is reserved by macOS.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
     }
 

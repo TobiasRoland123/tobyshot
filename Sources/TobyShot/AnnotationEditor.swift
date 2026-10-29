@@ -45,7 +45,7 @@ public final class AnnotationEditorWindow: NSWindowController, NSWindowDelegate 
         if UserDefaults.standard.bool(forKey: "editorAlwaysOnTop") {
             window.level = .floating
         }
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
             guard let self, let window = self.window,
                   NSApp.keyWindow === window,
                   (event.window == nil || event.window === window), window.attachedSheet == nil,
@@ -79,8 +79,24 @@ public final class AnnotationEditorWindow: NSWindowController, NSWindowDelegate 
         return responder is NSTextView || responder is NSTextField
     }
 
+    public func windowDidResignKey(_ notification: Notification) {
+        editorModel.isPanKeyDown = false
+    }
+
     func handleKeyEvent(_ event: NSEvent) -> Bool {
+        if event.type == .keyUp {
+            guard event.keyCode == UInt16(kVK_Space), editorModel.isPanKeyDown else { return false }
+            editorModel.isPanKeyDown = false
+            return true
+        }
         guard !shortcuts.isRecordingShortcut else { return false }
+        if event.keyCode == UInt16(kVK_Space),
+           ShortcutBinding(event: event).appKitModifiers.isEmpty,
+           editorModel.editingTextID == nil,
+           window.map({ !Self.isEditingText(in: $0) }) == true {
+            editorModel.isPanKeyDown = true
+            return true
+        }
         let action = shortcuts.action(for: event, scope: .editor)
         if action == nil, handleZoomShortcut(event) { return true }
         if let window, Self.isEditingText(in: window), action != .editorSave, action != .editorSaveAs { return false }
@@ -300,6 +316,7 @@ final class AnnotationEditorModel: ObservableObject {
     }
     static let minimumZoom: CGFloat = 0.1
     static let maximumZoom: CGFloat = 8
+    @Published var isPanKeyDown = false
     @Published var zoom: CGFloat = 0
     @Published private(set) var fitZoom: CGFloat = 1
     var actualZoom: CGFloat { zoom == 0 ? fitZoom : zoom }
@@ -324,6 +341,7 @@ final class AnnotationEditorModel: ObservableObject {
     private var selectionAnchor: CGPoint?
     private var selectionOriginalIDs: Set<UUID> = []
     private var moveCheckpointed = false
+    private var duplicateDragPending = false
     private var textResize: AnnotationTextResize?
     private var arrowEdit: AnnotationArrowEdit?
     private var shapeEdit: AnnotationShapeEdit?
@@ -340,6 +358,8 @@ final class AnnotationEditorModel: ObservableObject {
         self.defaults = defaults
         savedState = state()
     }
+
+    var duplicateDragBinding: AnnotationDuplicateDragBinding { .load(from: defaults) }
 
     func updateFitZoom(_ scale: CGFloat) {
         guard scale.isFinite, scale > 0, fitZoom != scale else { return }
@@ -462,6 +482,7 @@ final class AnnotationEditorModel: ObservableObject {
         selectionAnchor = nil
         selectionOriginalIDs.removeAll()
         movingOriginals.removeAll()
+        duplicateDragPending = false
         textResize = nil
         arrowEdit = nil
         shapeEdit = nil
@@ -479,14 +500,29 @@ final class AnnotationEditorModel: ObservableObject {
         let selected = annotations.filter { selectedIDs.contains($0.id) }
         guard !selected.isEmpty else { return false }
         checkpoint()
-        let copies = selected.map { annotation in
-            var copy = translated(annotation, by: CGPoint(x: 12, y: 12))
-            copy.id = UUID()
-            return copy
-        }
+        let copies = copies(of: selected, offset: CGPoint(x: 12, y: 12))
         insertObjects(copies)
         selectedIDs = Set(copies.map(\.id))
         resetSelectionDrag()
+        return true
+    }
+
+    private func copies(of originals: [EditorAnnotation], offset: CGPoint) -> [EditorAnnotation] {
+        originals.map { annotation in
+            var copy = translated(annotation, by: offset)
+            copy.id = UUID()
+            return copy
+        }
+    }
+
+    @discardableResult
+    func beginDuplicateDrag(_ id: UUID, at point: CGPoint) -> Bool {
+        guard tool != .crop, let hit = annotations.first(where: { $0.id == id }) else { return false }
+        finishTextEditing()
+        resetSelectionDrag()
+        moveCheckpointed = false
+        beginMoving(hit, at: point)
+        duplicateDragPending = true
         return true
     }
 
@@ -761,7 +797,17 @@ final class AnnotationEditorModel: ObservableObject {
         if !movingOriginals.isEmpty {
             let delta = CGPoint(x: point.x - dragOrigin.x, y: point.y - dragOrigin.y)
             guard delta != .zero || moveCheckpointed else { return }
-            if !moveCheckpointed { checkpoint(); selectedIDs = Set(movingOriginals.keys); moveCheckpointed = true }
+            if !moveCheckpointed {
+                checkpoint()
+                if duplicateDragPending {
+                    let copies = copies(of: annotations.filter { movingOriginals[$0.id] != nil }, offset: .zero)
+                    insertObjects(copies)
+                    movingOriginals = Dictionary(uniqueKeysWithValues: copies.map { ($0.id, $0) })
+                    duplicateDragPending = false
+                }
+                selectedIDs = Set(movingOriginals.keys)
+                moveCheckpointed = true
+            }
             for index in annotations.indices {
                 if let original = movingOriginals[annotations[index].id] {
                     annotations[index] = translated(original, by: delta)
@@ -924,7 +970,13 @@ private struct AnnotationEditorRoot: View {
         HStack(spacing: 8) {
             Menu {
                 ForEach(palette, id: \.0) { name, value in
-                    Button { model.color = value } label: { Label(name, systemImage: model.currentColor == value ? "checkmark.circle.fill" : "circle.fill") }
+                    Button { model.color = value } label: {
+                        Label {
+                            Text(name)
+                        } icon: {
+                            Image(nsImage: colorSwatch(value, selected: model.currentColor == value)).renderingMode(.original)
+                        }
+                    }
                 }
             } label: {
                 HStack(spacing: 5) {
@@ -944,7 +996,7 @@ private struct AnnotationEditorRoot: View {
         }.fixedSize()
     }
 
-    private func colorSwatch(_ color: NSColor) -> NSImage {
+    private func colorSwatch(_ color: NSColor, selected: Bool = false) -> NSImage {
         // Native menu labels discard SwiftUI symbol colors, so draw a full-color image.
         NSImage(size: NSSize(width: 16, height: 16), flipped: false) { bounds in
             let circle = NSBezierPath(ovalIn: bounds.insetBy(dx: 0.5, dy: 0.5))
@@ -953,6 +1005,19 @@ private struct AnnotationEditorRoot: View {
             NSColor.white.withAlphaComponent(0.45).setStroke()
             circle.lineWidth = 1
             circle.stroke()
+            if selected {
+                let rgb = color.usingColorSpace(.sRGB) ?? .black
+                let brightness = 0.2126 * rgb.redComponent + 0.7152 * rgb.greenComponent + 0.0722 * rgb.blueComponent
+                (brightness > 0.55 ? NSColor.black : .white).setStroke()
+                let checkmark = NSBezierPath()
+                checkmark.move(to: NSPoint(x: 4, y: 8))
+                checkmark.line(to: NSPoint(x: 7, y: 5))
+                checkmark.line(to: NSPoint(x: 12, y: 11))
+                checkmark.lineWidth = 1.8
+                checkmark.lineCapStyle = .round
+                checkmark.lineJoinStyle = .round
+                checkmark.stroke()
+            }
             return true
         }
     }
@@ -1033,9 +1098,15 @@ private struct AnnotationEditorRoot: View {
     private var helpPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Annotation shortcuts").font(.title2.bold())
-            Text("Move \(shortcuts.label(for: .moveTool))   Crop \(shortcuts.label(for: .cropTool))   Draw \(shortcuts.label(for: .drawTool))   Line \(shortcuts.label(for: .lineTool))\nText \(shortcuts.label(for: .textTool))   Arrow \(shortcuts.label(for: .arrowTool))   Counter \(shortcuts.label(for: .counterTool))   Ellipse \(shortcuts.label(for: .ellipseTool))\nRedact \(shortcuts.label(for: .redactionTool))   Rectangle \(shortcuts.label(for: .rectangleTool))   Filled rectangle \(shortcuts.label(for: .filledRectangleTool))   Pixelate \(shortcuts.label(for: .pixelateTool))\nBackground \(shortcuts.label(for: .backgroundTool))   Smaller/larger \(shortcuts.label(for: .decreaseToolSize))/\(shortcuts.label(for: .increaseToolSize))\nZoom in/out ⌘+/⌘−   Fit ⌘0   Actual size ⌘1\nCopy object \(shortcuts.label(for: .editorCopyObject))   Duplicate \(shortcuts.label(for: .editorDuplicate))   Save \(shortcuts.label(for: .editorSave))   Save as \(shortcuts.label(for: .editorSaveAs))\nCopy image \(shortcuts.label(for: .editorCopyScreenshot))   Print \(shortcuts.label(for: .editorPrint))   Pin \(shortcuts.label(for: .editorPin))\nUndo ⌘Z   Redo ⇧⌘Z   Delete Remove   Escape Select")
-            Text("Pinch to zoom. Use two-finger scrolling to move around the image. Paste a screenshot with ⌘V while the canvas has focus. Use Select to move pasted images, or drag their corners to resize proportionally. Move an image beyond an edge to expand the canvas. Drawing tools add annotations over pasted images.").foregroundStyle(.secondary)
-            Text("Drawing tools stay active, so you can add one annotation after another; Crop returns to the pointer once applied. New annotations stay selected. With a drawing tool, hover any annotation to show its handles, then drag a handle to edit it or drag its visible stroke or fill to move it. Dragging empty canvas, including inside an outlined shape, draws a new annotation. Hold Shift while drawing to snap lines and arrows to 45° increments, make rectangles square, or make ellipses circular. With the pointer, drag empty canvas space to select multiple annotations, then drag any selected annotation to move the group. Hold Shift to add to the selection. Drag an arrow endpoint to adjust it, or the middle handle to bend it; double-click the middle handle to straighten it. Drag the arrow itself to move it. Click with Text to type on the image; double-click existing text to edit it. Drag shape corners to resize rectangles, ellipses, freehand drawings, numbered steps, redactions, and pixelation regions; drag line endpoints to adjust them. Color and size controls update selected annotations. Drag a text corner to resize. Return finishes editing, Shift-Return adds a line. Crop applies when you finish the crop selection.").foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Move \(shortcuts.label(for: .moveTool))   Crop \(shortcuts.label(for: .cropTool))   Draw \(shortcuts.label(for: .drawTool))   Line \(shortcuts.label(for: .lineTool))\nText \(shortcuts.label(for: .textTool))   Arrow \(shortcuts.label(for: .arrowTool))   Counter \(shortcuts.label(for: .counterTool))   Ellipse \(shortcuts.label(for: .ellipseTool))\nRedact \(shortcuts.label(for: .redactionTool))   Rectangle \(shortcuts.label(for: .rectangleTool))   Filled rectangle \(shortcuts.label(for: .filledRectangleTool))   Pixelate \(shortcuts.label(for: .pixelateTool))\nBackground \(shortcuts.label(for: .backgroundTool))   Smaller/larger \(shortcuts.label(for: .decreaseToolSize))/\(shortcuts.label(for: .increaseToolSize))\nZoom in/out ⌘+/⌘−   Fit ⌘0   Actual size ⌘1\nCopy object \(shortcuts.label(for: .editorCopyObject))   Duplicate \(shortcuts.label(for: .editorDuplicate))   Save \(shortcuts.label(for: .editorSave))   Save as \(shortcuts.label(for: .editorSaveAs))\nCopy image \(shortcuts.label(for: .editorCopyScreenshot))   Print \(shortcuts.label(for: .editorPrint))   Pin \(shortcuts.label(for: .editorPin))\nUndo ⌘Z   Redo ⇧⌘Z   Delete Remove   Escape Select")
+                    Text("Hold Space and drag, or drag with the middle mouse button, to pan. Hold Command and scroll to zoom around the pointer. Shift-scroll moves horizontally. Trackpad pinch and two-finger scrolling also work. Use ⌘+ / ⌘− to zoom, ⌘0 to fit, or ⌘1 for 100%. Paste a screenshot with ⌘V while the canvas has focus. Use Select to move pasted images, or drag their corners to resize proportionally. Move an image beyond an edge to expand the canvas. Drawing tools add annotations over pasted images.").foregroundStyle(.secondary)
+                    Text("Hold the Duplicate Drag modifier and drag an annotation or selected group to make a copy. The default is Option (Alt); change or disable it in Settings → Shortcuts → Mouse Gestures. Undo removes the copies in one step.").foregroundStyle(.secondary)
+                    Text("Drawing tools stay active, so you can add one annotation after another; Crop returns to the pointer once applied. New annotations stay selected. With a drawing tool, hover any annotation to show its handles, then drag a handle to edit it or drag its visible stroke or fill to move it. Dragging empty canvas, including inside an outlined shape, draws a new annotation. Hold Shift while drawing to snap lines and arrows to 45° increments, make rectangles square, or make ellipses circular. With the pointer, drag empty canvas space to select multiple annotations, then drag any selected annotation to move the group. Hold Shift to add to the selection. Drag an arrow endpoint to adjust it, or the middle handle to bend it; double-click the middle handle to straighten it. Drag the arrow itself to move it. Click with Text to type on the image; double-click existing text to edit it. Drag shape corners to resize rectangles, ellipses, freehand drawings, numbered steps, redactions, and pixelation regions; drag line endpoints to adjust them. Color and size controls update selected annotations. Drag a text corner to resize. Return finishes editing, Shift-Return adds a line. Crop applies when you finish the crop selection.").foregroundStyle(.secondary)
+                }
+            }
+            .frame(height: 520)
             HStack { Spacer(); Button("Close") { showHelp = false }.keyboardShortcut(.defaultAction) }
         }.padding(24).frame(width: 420)
     }
